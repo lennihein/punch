@@ -16,18 +16,20 @@
 Create a fresh review report directly from the two PDFs:
 
 ```
-python cli.py merge atoss_aug.pdf Time-Recorder2.1_Timeproof_08.2025.pdf --issues August_2025_issues.csv
+python cli.py merge atoss_aug.pdf Time-Recorder2.1_Timeproof_08.2025.pdf --issues august_25_issues.csv
 ```
 
-This parses both exports, merges and validates the entries, and writes `August_2025_review.txt` (month and year are inferred from the data).
+This parses both exports, merges and validates the entries, and writes `august_25.txt` (month and year inferred as `<month>_<yy>` in lowercase).
 
 After editing the report text file, re-validate it and rebuild the summary table:
 
 ```
-python cli.py verify August_2025_review.txt --issues August_2025_verified_issues.csv
+python cli.py verify august_25.txt --issues august_25_verified_issues.csv
 ```
 
-This produces the condensed `August_2025_report.txt` plus the optional issues CSV.
+This overwrites `august_25.txt` with the condensed verified view and optionally writes an updated issues CSV. Re-run `merge` if you ever need to regenerate the editable version.
+
+Pass `-o/--out` to either command if you want to override the default `<month>_<yy>.txt` location.
 
 Notes:
 - Location: maps token `ma` (case-insensitive, whole word) to `remote`; otherwise `office`.

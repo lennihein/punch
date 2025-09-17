@@ -17,7 +17,7 @@ def _slug_from_dates(dates: Iterable[str]) -> str | None:
             dt = datetime.strptime(date_s, "%Y-%m-%d")
         except Exception:
             continue
-        return dt.strftime("%B_%Y")
+        return dt.strftime("%B_%y").lower()
     return None
 
 
@@ -30,7 +30,7 @@ def _month_slug(result: dict) -> str:
     slug = _slug_from_dates(d.get("date") for d in days if isinstance(d, dict))
     if slug:
         return slug
-    return _date.today().strftime("%B_%Y")
+    return _date.today().strftime("%B_%y").lower()
 
 
 def run_merge(args: argparse.Namespace) -> int:
@@ -42,7 +42,7 @@ def run_merge(args: argparse.Namespace) -> int:
     report_text = render_review_report(result)
 
     month_slug = _month_slug(result)
-    out_path = Path(f"{month_slug}_review.txt")
+    out_path = args.out if args.out else Path(f"{month_slug}.txt")
     out_path.write_text(report_text, encoding="utf-8")
     print(f"Wrote review report to {out_path}")
 
@@ -64,7 +64,7 @@ def run_verify(args: argparse.Namespace) -> int:
     report_text = render_reviewed_report(result)
 
     month_slug = _month_slug(result)
-    out_path = Path(f"{month_slug}_report.txt")
+    out_path = args.out if args.out else Path(f"{month_slug}.txt")
     out_path.write_text(report_text, encoding="utf-8")
     print(f"Wrote verified report to {out_path}")
 
@@ -83,11 +83,13 @@ def main(argv=None) -> int:
     p_merge.add_argument("atoss_pdf", type=Path, help="ATOSS work PDF export")
     p_merge.add_argument("app_pdf", type=Path, help="Timerecordlist app PDF export")
     p_merge.add_argument("--issues", type=Path, help="Optional path to write issues CSV")
+    p_merge.add_argument("-o", "--out", type=Path, help="Write review report to this file (defaults to <month>_<yy>.txt)")
     p_merge.set_defaults(func=run_merge)
 
     p_verify = sub.add_parser("verify", help="Validate an edited report and rebuild the summary")
     p_verify.add_argument("report", type=Path, help="Edited review report text file")
     p_verify.add_argument("--issues", type=Path, help="Optional path to write issues CSV")
+    p_verify.add_argument("-o", "--out", type=Path, help="Write verified report to this file (defaults to <month>_<yy>.txt)")
     p_verify.set_defaults(func=run_verify)
 
     args = parser.parse_args(argv)
