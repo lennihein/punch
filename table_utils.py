@@ -230,6 +230,13 @@ def render_monthly_report(files: List[Path]) -> str:
     return render_report(ctx["entries"], ctx["issues"], ctx["days"], columns=DEFAULT_COLUMNS)
 
 
+def render_review_report(result: Dict[str, Any]) -> str:
+    entries = result.get("entries", []) or []
+    issues = result.get("issues", []) or []
+    days = result.get("days", []) or []
+    return render_report(entries, issues, days, columns=DEFAULT_COLUMNS)
+
+
 DAY_LINE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\b")
 ENTRY_LINE_RE = re.compile(r"^\s{2,}(\d{2}:\d{2})\s+(\d{2}:\d{2})")
 

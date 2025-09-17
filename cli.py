@@ -1,102 +1,97 @@
 #!/usr/bin/env python3
 import argparse
-import json
 import sys
+from datetime import datetime, date as _date
 from pathlib import Path
+from typing import Iterable
 
 from parser_atoss import parse_atoss_pdf
 from parser_app import parse_app_pdf
-from table_utils import parse_report_entries, render_monthly_report, render_reviewed_report
-from validation import load_entries as load_entries_for_validation, merge_entries, validate, write_issues_csv
+from table_utils import parse_report_entries, render_review_report, render_reviewed_report
+from validation import merge_entries, validate, write_issues_csv
+
+
+def _slug_from_dates(dates: Iterable[str]) -> str | None:
+    for date_s in sorted(d for d in dates if d):
+        try:
+            dt = datetime.strptime(date_s, "%Y-%m-%d")
+        except Exception:
+            continue
+        return dt.strftime("%B_%Y")
+    return None
+
+
+def _month_slug(result: dict) -> str:
+    entries = result.get("entries", []) or []
+    slug = _slug_from_dates(e.get("date") for e in entries if isinstance(e, dict))
+    if slug:
+        return slug
+    days = result.get("days", []) or []
+    slug = _slug_from_dates(d.get("date") for d in days if isinstance(d, dict))
+    if slug:
+        return slug
+    return _date.today().strftime("%B_%Y")
+
+
+def run_merge(args: argparse.Namespace) -> int:
+    atoss_entries = parse_atoss_pdf(args.atoss_pdf)
+    app_entries = parse_app_pdf(args.app_pdf)
+
+    merged_entries = merge_entries(list(atoss_entries) + list(app_entries))
+    result = validate(merged_entries)
+    report_text = render_review_report(result)
+
+    month_slug = _month_slug(result)
+    out_path = Path(f"{month_slug}_review.txt")
+    out_path.write_text(report_text, encoding="utf-8")
+    print(f"Wrote review report to {out_path}")
+
+    if args.issues:
+        write_issues_csv(result.get("issues", []), args.issues)
+        print(f"Wrote issues CSV to {args.issues}")
+
+    return 0
+
+
+def run_verify(args: argparse.Namespace) -> int:
+    manual_entries = parse_report_entries(args.report)
+    if not manual_entries:
+        print(f"No entries found in {args.report}", file=sys.stderr)
+        return 1
+
+    merged_manual = merge_entries(manual_entries)
+    result = validate(merged_manual)
+    report_text = render_reviewed_report(result)
+
+    month_slug = _month_slug(result)
+    out_path = Path(f"{month_slug}_report.txt")
+    out_path.write_text(report_text, encoding="utf-8")
+    print(f"Wrote verified report to {out_path}")
+
+    if args.issues:
+        write_issues_csv(result.get("issues", []), args.issues)
+        print(f"Wrote issues CSV to {args.issues}")
+
+    return 0
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description="Parse PDFs into booked time entries (ATOSS)")
+    parser = argparse.ArgumentParser(description="ATOSS/App PDF merge + review reports")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p_atoss = sub.add_parser("parse-atoss", help="Parse ATOSS work PDF into JSON list of intervals")
-    p_atoss.add_argument("pdf", type=Path, help="Path to ATOSS PDF file")
-    p_atoss.add_argument("-o", "--out", type=Path, help="Write JSON to this file")
-    p_atoss.add_argument("--pretty", action="store_true", help="Pretty-print JSON")
+    p_merge = sub.add_parser("merge", help="Parse PDFs, merge entries, and produce a review report")
+    p_merge.add_argument("atoss_pdf", type=Path, help="ATOSS work PDF export")
+    p_merge.add_argument("app_pdf", type=Path, help="Timerecordlist app PDF export")
+    p_merge.add_argument("--issues", type=Path, help="Optional path to write issues CSV")
+    p_merge.set_defaults(func=run_merge)
 
-    p_app = sub.add_parser("parse-app", help="Parse Timerecordlist app PDF into JSON list of intervals")
-    p_app.add_argument("pdf", type=Path, help="Path to App PDF file")
-    p_app.add_argument("-o", "--out", type=Path, help="Write JSON to this file")
-    p_app.add_argument("--pretty", action="store_true", help="Pretty-print JSON")
-
-    p_val = sub.add_parser("validate", help="Merge entries and validate rules")
-    p_val.add_argument("files", nargs="+", type=Path, help="JSON files with entries list (app + work)")
-    p_val.add_argument("-o", "--out", type=Path, help="Write merged+validated JSON to this file")
-    p_val.add_argument("--issues", type=Path, help="Write issues to CSV")
-    p_val.add_argument("--pretty", action="store_true", help="Pretty-print JSON")
-
-    p_tab = sub.add_parser("table", help="Render merged entries into a daily report")
-    p_tab.add_argument("files", nargs="+", type=Path, help="One or more JSON files with entries list")
-    p_tab.add_argument("-o", "--out", type=Path, help="Write output to this file")
-
-    p_verify = sub.add_parser("verify-report", help="Validate and re-render a manually edited report")
-    p_verify.add_argument("report", type=Path, help="Path to edited report text file")
-    p_verify.add_argument("-o", "--out", type=Path, help="Write reviewed report to this file")
-    p_verify.add_argument("--issues", type=Path, help="Write issues to CSV")
+    p_verify = sub.add_parser("verify", help="Validate an edited report and rebuild the summary")
+    p_verify.add_argument("report", type=Path, help="Edited review report text file")
+    p_verify.add_argument("--issues", type=Path, help="Optional path to write issues CSV")
+    p_verify.set_defaults(func=run_verify)
 
     args = parser.parse_args(argv)
-
-    if args.cmd == "parse-atoss":
-        entries = parse_atoss_pdf(args.pdf)
-        js = json.dumps(entries, indent=2 if args.pretty else None, ensure_ascii=False)
-        if args.out:
-            args.out.write_text(js, encoding="utf-8")
-        else:
-            print(js)
-        return 0
-
-    if args.cmd == "parse-app":
-        entries = parse_app_pdf(args.pdf)
-        js = json.dumps(entries, indent=2 if args.pretty else None, ensure_ascii=False)
-        if args.out:
-            args.out.write_text(js, encoding="utf-8")
-        else:
-            print(js)
-        return 0
-
-    if args.cmd == "validate":
-        all_entries = load_entries_for_validation(args.files)
-        merged = merge_entries(all_entries)
-        result = validate(merged)
-        js = json.dumps(result, indent=2 if args.pretty else None, ensure_ascii=False)
-        if args.out:
-            args.out.write_text(js, encoding="utf-8")
-        else:
-            print(js)
-        if args.issues:
-            write_issues_csv(result.get("issues", []), args.issues)
-        return 0
-
-    if args.cmd == "table":
-        out = render_monthly_report(args.files)
-        if args.out:
-            args.out.write_text(out, encoding="utf-8")
-        else:
-            print(out)
-        return 0
-
-    if args.cmd == "verify-report":
-        manual_entries = parse_report_entries(args.report)
-        if not manual_entries:
-            print(f"No entries found in {args.report}", file=sys.stderr)
-            return 1
-        merged_manual = merge_entries(manual_entries)
-        result = validate(merged_manual)
-        report_text = render_reviewed_report(result)
-        if args.out:
-            args.out.write_text(report_text, encoding="utf-8")
-        else:
-            print(report_text)
-        if args.issues:
-            write_issues_csv(result.get("issues", []), args.issues)
-        return 0
-
-    return 1
+    return args.func(args)
 
 
 if __name__ == "__main__":
