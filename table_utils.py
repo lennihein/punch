@@ -1,7 +1,7 @@
 import json
 import re
 from collections import defaultdict
-from datetime import date as _date, datetime
+from datetime import date as _date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence
 
@@ -106,11 +106,21 @@ def _format_issue_summary(issue: Dict[str, Any]) -> str:
     if issue.get("type") == "insufficient_breaks":
         required = issue.get("required")
         actual = issue.get("actual")
-        return f"{prefix}insufficient breaks (required {required} min, actual {actual} min)"
+        missing = issue.get("missing")
+        missing_part = f", missing {missing} min" if missing is not None else ""
+        return f"{prefix}insufficient breaks (required {required} min, actual {actual} min{missing_part})"
 
     if issue.get("type") == "over_daily_max":
+        gross = issue.get("gross_minutes")
+        max_minutes = issue.get("max_minutes")
         excess = issue.get("excess")
-        return f"{prefix}worked over daily max (excess {excess} min)"
+        details: List[str] = []
+        if gross is not None and max_minutes is not None:
+            details.append(f"{gross} min vs max {max_minutes} min")
+        if excess is not None:
+            details.append(f"excess {excess} min")
+        detail_str = ", ".join(details)
+        return f"{prefix}worked over daily max ({detail_str})" if detail_str else f"{prefix}worked over daily max"
 
     if issue.get("type") == "outside_rahmenzeit":
         start = issue.get("start")
@@ -130,6 +140,53 @@ def summarize_issues(issues: Iterable[Dict[str, Any]]) -> List[str]:
     issue_dicts = [dict(it) for it in issues if isinstance(it, dict)]
     sorted_issues = sorted(issue_dicts, key=lambda x: (x.get("date", ""), x.get("type", "")))
     return [_format_issue_summary(it) for it in sorted_issues]
+
+
+def find_empty_workdays(entries: Iterable[Dict[str, Any]], days: Iterable[Dict[str, Any]]) -> List[str]:
+    entry_date_strings: List[str] = []
+    range_date_strings: List[str] = []
+
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        date_s = e.get("date")
+        if date_s:
+            entry_date_strings.append(str(date_s))
+            range_date_strings.append(str(date_s))
+
+    for d in days:
+        if not isinstance(d, dict):
+            continue
+        date_s = d.get("date")
+        if date_s:
+            range_date_strings.append(str(date_s))
+
+    range_dates: List[_date] = []
+    for ds in range_date_strings:
+        try:
+            range_dates.append(datetime.strptime(ds, "%Y-%m-%d").date())
+        except Exception:
+            continue
+
+    if not range_dates:
+        return []
+
+    min_date = min(range_dates)
+    max_date = max(range_dates)
+    have_entries = {
+        datetime.strptime(ds, "%Y-%m-%d").date()
+        for ds in entry_date_strings
+        if isinstance(ds, str)
+    }
+
+    warnings: List[str] = []
+    cur = min_date
+    while cur <= max_date:
+        if cur.weekday() < 5 and cur not in have_entries:
+            warnings.append(cur.strftime("%Y-%m-%d (%A)"))
+        cur += timedelta(days=1)
+
+    return warnings
 
 
 def render_report(entries: Iterable[Dict[str, Any]],
@@ -210,6 +267,15 @@ def render_report(entries: Iterable[Dict[str, Any]],
             lines.append(f"- {summary}")
     else:
         lines.append("Issues: none")
+    lines.append("")
+
+    empty_workdays = find_empty_workdays(entries_list, days_map.values())
+    if empty_workdays:
+        lines.append("Empty workdays without entries:")
+        for label in empty_workdays:
+            lines.append(f"- {label}")
+    else:
+        lines.append("Empty workdays without entries: none")
     lines.append("")
 
     for date_s in sorted(entries_by_day.keys()):

@@ -7,7 +7,13 @@ from typing import Iterable
 
 from parser_atoss import parse_atoss_pdf
 from parser_app import parse_app_pdf
-from table_utils import parse_report_entries, render_review_report, render_reviewed_report, summarize_issues
+from table_utils import (
+    find_empty_workdays,
+    parse_report_entries,
+    render_review_report,
+    render_reviewed_report,
+    summarize_issues,
+)
 from validation import merge_entries, validate, write_issues_csv
 
 
@@ -54,6 +60,14 @@ def run_merge(args: argparse.Namespace) -> int:
     else:
         print("Issues summary: none")
 
+    empty_days = find_empty_workdays(merged_entries, result.get("days", []) or [])
+    if empty_days:
+        print("Empty workdays without entries:")
+        for label in empty_days:
+            print(f"  {label}")
+    else:
+        print("Empty workdays without entries: none")
+
     if args.issues:
         write_issues_csv(result.get("issues", []), args.issues)
         print(f"Wrote issues CSV to {args.issues}")
@@ -83,6 +97,14 @@ def run_verify(args: argparse.Namespace) -> int:
             print(f"  {line}")
     else:
         print("Issues summary: none")
+
+    empty_days = find_empty_workdays(merged_manual, result.get("days", []) or [])
+    if empty_days:
+        print("Empty workdays without entries:")
+        for label in empty_days:
+            print(f"  {label}")
+    else:
+        print("Empty workdays without entries: none")
 
     if args.issues:
         write_issues_csv(result.get("issues", []), args.issues)
