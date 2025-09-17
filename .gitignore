@@ -1,0 +1,15 @@
+# Ignore all PDF files (case variations)
+*.pdf
+*.PDF
+
+# Windows zone identifier sidecar streams copied over
+*:[Zz]one.Identifier*
+
+# Python artifacts
+__pycache__/
+*.pyc
+.venv/
+.direnv/
+
+# Scratch outputs from local runs
+out_*.json
