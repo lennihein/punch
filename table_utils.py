@@ -98,6 +98,40 @@ def _day_issue_tags(date_s: str, issues: Iterable[Dict[str, Any]]) -> str:
     return ",".join(sorted(set(tags)))
 
 
+def _format_issue_summary(issue: Dict[str, Any]) -> str:
+    typ = (issue.get("type") or "issue").replace("_", " ")
+    date_s = issue.get("date")
+    prefix = f"{date_s}: " if date_s else ""
+
+    if issue.get("type") == "insufficient_breaks":
+        required = issue.get("required")
+        actual = issue.get("actual")
+        return f"{prefix}insufficient breaks (required {required} min, actual {actual} min)"
+
+    if issue.get("type") == "over_daily_max":
+        excess = issue.get("excess")
+        return f"{prefix}worked over daily max (excess {excess} min)"
+
+    if issue.get("type") == "outside_rahmenzeit":
+        start = issue.get("start")
+        end = issue.get("end")
+        return f"{prefix}interval {start}-{end} outside Rahmenarbeitszeit"
+
+    if isinstance(issue.get("type"), str) and issue.get("type", "").startswith("overlap_"):
+        a_id = issue.get("a_id") or "A"
+        b_id = issue.get("b_id") or "B"
+        minutes = issue.get("minutes")
+        return f"{prefix}overlap between {a_id} and {b_id} ({minutes} min)"
+
+    return f"{prefix}{typ}"
+
+
+def summarize_issues(issues: Iterable[Dict[str, Any]]) -> List[str]:
+    issue_dicts = [dict(it) for it in issues if isinstance(it, dict)]
+    sorted_issues = sorted(issue_dicts, key=lambda x: (x.get("date", ""), x.get("type", "")))
+    return [_format_issue_summary(it) for it in sorted_issues]
+
+
 def render_report(entries: Iterable[Dict[str, Any]],
                   issues: Iterable[Dict[str, Any]],
                   days: Iterable[Dict[str, Any]],
@@ -167,6 +201,15 @@ def render_report(entries: Iterable[Dict[str, Any]],
     lines.append(f"Month: {month_label}")
     lines.append(f"Generated: {today_str}")
     lines.append(f"Monthly delta vs 07:48/day: {_format_minutes(monthly_delta)}")
+    lines.append("")
+
+    issue_summaries = summarize_issues(issues_iter)
+    if issue_summaries:
+        lines.append("Issues:")
+        for summary in issue_summaries:
+            lines.append(f"- {summary}")
+    else:
+        lines.append("Issues: none")
     lines.append("")
 
     for date_s in sorted(entries_by_day.keys()):

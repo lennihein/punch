@@ -7,7 +7,7 @@ from typing import Iterable
 
 from parser_atoss import parse_atoss_pdf
 from parser_app import parse_app_pdf
-from table_utils import parse_report_entries, render_review_report, render_reviewed_report
+from table_utils import parse_report_entries, render_review_report, render_reviewed_report, summarize_issues
 from validation import merge_entries, validate, write_issues_csv
 
 
@@ -46,6 +46,14 @@ def run_merge(args: argparse.Namespace) -> int:
     out_path.write_text(report_text, encoding="utf-8")
     print(f"Wrote review report to {out_path}")
 
+    issue_lines = summarize_issues(result.get("issues", []) or [])
+    if issue_lines:
+        print("Issues summary:")
+        for line in issue_lines:
+            print(f"  {line}")
+    else:
+        print("Issues summary: none")
+
     if args.issues:
         write_issues_csv(result.get("issues", []), args.issues)
         print(f"Wrote issues CSV to {args.issues}")
@@ -67,6 +75,14 @@ def run_verify(args: argparse.Namespace) -> int:
     out_path = args.out if args.out else Path(f"{month_slug}.txt")
     out_path.write_text(report_text, encoding="utf-8")
     print(f"Wrote verified report to {out_path}")
+
+    issue_lines = summarize_issues(result.get("issues", []) or [])
+    if issue_lines:
+        print("Issues summary:")
+        for line in issue_lines:
+            print(f"  {line}")
+    else:
+        print("Issues summary: none")
 
     if args.issues:
         write_issues_csv(result.get("issues", []), args.issues)
