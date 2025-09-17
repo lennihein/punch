@@ -36,3 +36,4 @@ Notes:
 - App PDF: defaults to `remote`; lines containing `Norm` switch to `office` and `Mobil` confirm `remote`.
 - Times are detected per line with the date; multiple start/end pairs per day are supported.
 - Reports include an issue summary ahead of the daily sections for quick scanning.
+- Weekdays in the month without any entries are listed so you can fill in holidays or missed logs explicitly.

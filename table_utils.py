@@ -1,5 +1,6 @@
 import json
 import re
+import calendar
 from collections import defaultdict
 from datetime import date as _date, datetime, timedelta
 from pathlib import Path
@@ -143,48 +144,48 @@ def summarize_issues(issues: Iterable[Dict[str, Any]]) -> List[str]:
 
 
 def find_empty_workdays(entries: Iterable[Dict[str, Any]], days: Iterable[Dict[str, Any]]) -> List[str]:
-    entry_date_strings: List[str] = []
-    range_date_strings: List[str] = []
+    entry_dates: List[_date] = []
+    month_keys: set[tuple[int, int]] = set()
 
     for e in entries:
         if not isinstance(e, dict):
             continue
         date_s = e.get("date")
-        if date_s:
-            entry_date_strings.append(str(date_s))
-            range_date_strings.append(str(date_s))
+        if not date_s:
+            continue
+        try:
+            dt = datetime.strptime(str(date_s), "%Y-%m-%d").date()
+        except Exception:
+            continue
+        entry_dates.append(dt)
+        month_keys.add((dt.year, dt.month))
 
     for d in days:
         if not isinstance(d, dict):
             continue
         date_s = d.get("date")
-        if date_s:
-            range_date_strings.append(str(date_s))
-
-    range_dates: List[_date] = []
-    for ds in range_date_strings:
+        if not date_s:
+            continue
         try:
-            range_dates.append(datetime.strptime(ds, "%Y-%m-%d").date())
+            dt = datetime.strptime(str(date_s), "%Y-%m-%d").date()
         except Exception:
             continue
+        month_keys.add((dt.year, dt.month))
 
-    if not range_dates:
+    if not month_keys:
         return []
 
-    min_date = min(range_dates)
-    max_date = max(range_dates)
-    have_entries = {
-        datetime.strptime(ds, "%Y-%m-%d").date()
-        for ds in entry_date_strings
-        if isinstance(ds, str)
-    }
-
+    have_entries = set(entry_dates)
     warnings: List[str] = []
-    cur = min_date
-    while cur <= max_date:
-        if cur.weekday() < 5 and cur not in have_entries:
-            warnings.append(cur.strftime("%Y-%m-%d (%A)"))
-        cur += timedelta(days=1)
+
+    for year, month in sorted(month_keys):
+        month_start = _date(year, month, 1)
+        last_day = calendar.monthrange(year, month)[1]
+        cur = month_start
+        while cur.month == month:
+            if cur.weekday() < 5 and cur not in have_entries:
+                warnings.append(cur.strftime("%Y-%m-%d (%A)"))
+            cur += timedelta(days=1)
 
     return warnings
 
