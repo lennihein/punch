@@ -120,7 +120,8 @@ def validate(entries_merged: List[Entry]) -> Dict[str, Any]:
     days: List[Dict[str, Any]] = []
 
     R_START = time(6, 0)
-    R_END = time(20, 0)
+    R_END_DEFAULT = time(20, 0)
+    R_END_FRIDAY = time(18, 0)
     S_MIN = 7 * 60 + 48  # 7:48
     D_MAX = 10 * 60       # 10:00
 
@@ -128,18 +129,26 @@ def validate(entries_merged: List[Entry]) -> Dict[str, Any]:
         # Sort intervals by start
         items.sort(key=lambda r: (r["start"], r["end"]))
 
+        # Determine Rahmenarbeitszeit end based on weekday (Friday: 18:00)
+        day_date = None
+        try:
+            day_date = date.fromisoformat(d)
+        except ValueError:
+            pass
+        r_end = R_END_FRIDAY if (day_date and day_date.weekday() == 4) else R_END_DEFAULT
+
         # Rahmenzeit + compute gross minutes
         gross = 0
         for e in items:
             s, e_t = _parse_time(e["start"]), _parse_time(e["end"])
-            if not (s >= R_START and e_t <= R_END):
+            if not (s >= R_START and e_t <= r_end):
                 issues.append({
                     "type": "outside_rahmenzeit",
                     "date": d,
                     "id": e.get("id"),
                     "start": e["start"],
                     "end": e["end"],
-                    "message": "Interval outside 06:00–20:00",
+                    "message": f"Interval outside Rahmenarbeitszeit 06:00–{r_end.strftime('%H:%M')}",
                 })
             gross += _minutes_between(s, e_t)
 
