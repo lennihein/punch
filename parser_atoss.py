@@ -130,7 +130,7 @@ def _pair_times(times: List[Tuple[str, str]]) -> List[Tuple[time, time]]:
         buf.append(_to_time(hh, mm))
         if len(buf) == 2:
             start, end = buf
-            if start < end:
+            if start <= end:
                 pairs.append((start, end))
             buf = []
     return pairs
@@ -198,33 +198,45 @@ def parse_atoss_text(text: str) -> Tuple[List[Entry], Dict[str, str]]:
                 loc = "remote"
                 break
 
-        # Time token extraction
-        ak_tokens: List[Tuple[str, str]] = []
-        for ln in day_lines:
+        # Time token extraction: Look for arrival/departure bits (k/a) or Dienstgang markers
+        all_pairs = set()
+        for i, ln in enumerate(day_lines):
             if BLOCK_END_RE.search(ln):
                 continue
-            for m in re.finditer(r"(?:\bk\b\s*)?([01]?\d|2[0-3]):([0-5]\d)(?:\s*\b[k|a]\b)?", ln, re.IGNORECASE):
-                hh, mm = m.group(1), m.group(2)
-                span = m.span()
-                context = ln[max(0, span[0]-4): span[1]+4]
-                if re.search(r"\b[ka]\b", context, re.IGNORECASE):
-                    ak_tokens.append((hh, mm))
+            
+            # Find all times on this specific line
+            line_times = TIME_RE.findall(ln)
+            
+            # If it's the first line, always consider its pairs (usually main work)
+            if i == 0:
+                for p in _pair_times(line_times):
+                    all_pairs.add(p)
+            
+            # If the line has 'k', 'a', 'dg' or 'dienstgang', it's a marker line
+            if re.search(r"\b[ka]\b|\bdg\b|dienstgang", ln, re.IGNORECASE):
+                for p in _pair_times(line_times):
+                    all_pairs.add(p)
+            else:
+                # Individual token check for k/a (in case they are mixed with other text)
+                marked_tokens = []
+                for m in re.finditer(r"(?:\bk\b\s*)?([01]?\d|2[0-3]):([0-5]\d)(?:\s*\b[k|a]\b)?", ln, re.IGNORECASE):
+                    hh, mm = m.group(1), m.group(2)
+                    span = m.span()
+                    context = ln[max(0, span[0]-4): span[1]+4]
+                    if re.search(r"\b[ka]\b", context, re.IGNORECASE):
+                        marked_tokens.append((hh, mm))
+                for p in _pair_times(marked_tokens):
+                    all_pairs.add(p)
 
-        pairs = _pair_times(ak_tokens)
-        
-        # Fallback: if no valid k/a pairs were found, try the first line's generic times
-        if not pairs and day_lines:
-            generic_tokens = TIME_RE.findall(day_lines[0])
-            # Only use them if they form at least one valid pair
-            generic_pairs = _pair_times(generic_tokens)
-            if generic_pairs:
-                pairs = generic_pairs
+        pairs = sorted(list(all_pairs))
+
+
 
         r_start = time(6, 0)
         r_end = time(20, 0)
         def in_rahmen(p: Tuple[time, time]) -> bool:
             s, e = p
-            return (s >= r_start) and (e <= r_end) and (e > s)
+            return (s >= r_start) and (e <= r_end) and (e >= s)
 
         current_iso = date(current_year, current_month, day_dom).isoformat()
         

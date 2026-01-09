@@ -73,8 +73,7 @@ def parse_app_text(text: str) -> List[AppEntry]:
 
         d = date(year, month, dom).isoformat()
         minutes = _minutes_between(s_h, s_m, e_h, e_m)
-        if minutes <= 0:
-            continue
+
         # Location: default unknown; 'Norm' => office; 'Mobil' => remote
         loc = ""
         low = ln.lower()
