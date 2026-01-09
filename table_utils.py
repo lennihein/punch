@@ -392,7 +392,7 @@ def render_review_report(result: Dict[str, Any], day_notes: Dict[str, str] = Non
     return render_report(entries, issues, days, columns=DEFAULT_COLUMNS, day_notes=day_notes, day_codes=day_codes)
 
 
-DAY_LINE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\b")
+DAY_LINE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})\b")
 ENTRY_LINE_RE = re.compile(r"^\s{2,}(\d{2}:\d{2})\s+(\d{2}:\d{2})")
 
 
