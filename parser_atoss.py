@@ -199,8 +199,7 @@ def parse_atoss_text(text: str) -> Tuple[List[Entry], Dict[str, str]]:
                 break
 
         # Time token extraction
-        time_tokens: List[Tuple[str, str]] = []
-        saw_ka = False
+        ak_tokens: List[Tuple[str, str]] = []
         for ln in day_lines:
             if BLOCK_END_RE.search(ln):
                 continue
@@ -209,16 +208,18 @@ def parse_atoss_text(text: str) -> Tuple[List[Entry], Dict[str, str]]:
                 span = m.span()
                 context = ln[max(0, span[0]-4): span[1]+4]
                 if re.search(r"\b[ka]\b", context, re.IGNORECASE):
-                    time_tokens.append((hh, mm))
-                    saw_ka = True
+                    ak_tokens.append((hh, mm))
 
-        if not saw_ka:
-            if day_lines:
-                tkns = TIME_RE.findall(day_lines[0])
-                tkns = tkns[:2]
-                time_tokens.extend(tkns)
+        pairs = _pair_times(ak_tokens)
+        
+        # Fallback: if no valid k/a pairs were found, try the first line's generic times
+        if not pairs and day_lines:
+            generic_tokens = TIME_RE.findall(day_lines[0])
+            # Only use them if they form at least one valid pair
+            generic_pairs = _pair_times(generic_tokens)
+            if generic_pairs:
+                pairs = generic_pairs
 
-        pairs = _pair_times(time_tokens)
         r_start = time(6, 0)
         r_end = time(20, 0)
         def in_rahmen(p: Tuple[time, time]) -> bool:
