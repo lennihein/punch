@@ -82,13 +82,13 @@ def run_merge(args: argparse.Namespace) -> int:
     else:
         print("Issues summary: none")
 
-    empty_days = find_empty_workdays(merged_entries, result.get("days", []) or [], day_codes=atoss_day_codes)
+    empty_days = find_empty_workdays(merged_entries, result.get("days", []) or [], day_codes=combined_day_codes)
     if empty_days:
         print("Empty workdays without entries:")
         for label in empty_days:
             # Add code suffix for consistency in terminal
             dt_part = label.split(" ")[0]
-            code = atoss_day_codes.get(dt_part)
+            code = combined_day_codes.get(dt_part)
             suffix = f" [{code}]" if code and code != "office" else ""
             print(f"  {label}{suffix}")
     else:

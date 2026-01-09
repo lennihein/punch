@@ -15,6 +15,7 @@ MINIMAL_COLUMNS: Sequence[str] = ("start", "end", "duration", "issues")
 STATUS_MAP = {
     "K": "Krank",
     "S": "Sonderurlaub",
+    "U": "Urlaub",
 }
 
 
@@ -194,7 +195,7 @@ def find_empty_workdays(entries: Iterable[Dict[str, Any]], days: Iterable[Dict[s
             # Skip if we have entries OR if it's marked as Sick/Special Leave
             if cur.weekday() < 5 and cur not in have_entries:
                 code = day_codes.get(iso, "")
-                if code not in ("K", "S"):
+                if code not in ("K", "S", "U"):
                     warnings.append(cur.strftime("%Y-%m-%d (%A)"))
             cur += timedelta(days=1)
 
@@ -291,7 +292,7 @@ def render_report(entries: Iterable[Dict[str, Any]],
     # Also find absences to list them explicitly
     absences = []
     for d_str, code in sorted(day_codes.items()):
-        if code.upper() in ("K", "S"):
+        if code.upper() in ("K", "S", "U"):
             # Check if there were any entries (unlikely but possible)
             if d_str not in entries_by_day:
                 label = f"{d_str} ({_weekday_label(d_str)})"
