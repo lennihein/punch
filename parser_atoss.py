@@ -11,20 +11,6 @@ from typing import Dict, Iterable, List, Optional, Tuple, Any
 # Suppress pdfminer warnings about FontBBox
 logging.getLogger("pdfminer").setLevel(logging.ERROR)
 
-def _try_extract_text_pypdf(path: Path) -> Optional[str]:
-    try:
-        from pypdf import PdfReader  # type: ignore
-    except Exception:
-        return None
-    try:
-        reader = PdfReader(str(path))
-        parts: List[str] = []
-        for page in reader.pages:
-            parts.append(page.extract_text() or "")
-        return "\n".join(parts)
-    except Exception:
-        return None
-
 
 def _try_extract_text_pdfminer(path: Path) -> Optional[str]:
     try:
@@ -72,9 +58,9 @@ def _try_extract_text_pdfminer(path: Path) -> Optional[str]:
 
 
 def extract_text_for_debug(path: Path) -> str:
-    text = _try_extract_text_pypdf(path) or _try_extract_text_pdfminer(path)
+    text = _try_extract_text_pdfminer(path)
     if not text:
-        raise RuntimeError("Failed to extract text. Install dependencies from requirements.txt")
+        raise RuntimeError("Failed to extract text. Ensure pdfminer-six is available in your environment (managed by flake.nix)")
     return text
 
 

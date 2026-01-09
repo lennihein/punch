@@ -13,3 +13,6 @@ __pycache__/
 
 # Scratch outputs from local runs
 out_*.json
+
+# Exported Timesheets
+export_*.txt
