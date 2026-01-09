@@ -1,4 +1,5 @@
 import re
+import logging
 from dataclasses import dataclass, asdict
 from datetime import datetime, date, time, timedelta
 from pathlib import Path
@@ -6,6 +7,9 @@ from typing import Dict, Iterable, List, Optional, Tuple, Any
 
 
 # --- PDF text extraction helpers ---
+
+# Suppress pdfminer warnings about FontBBox
+logging.getLogger("pdfminer").setLevel(logging.ERROR)
 
 def _try_extract_text_pypdf(path: Path) -> Optional[str]:
     try:
@@ -24,11 +28,45 @@ def _try_extract_text_pypdf(path: Path) -> Optional[str]:
 
 def _try_extract_text_pdfminer(path: Path) -> Optional[str]:
     try:
-        from pdfminer.high_level import extract_text  # type: ignore
+        from pdfminer.high_level import extract_pages
+        from pdfminer.layout import LTTextContainer
     except Exception:
         return None
     try:
-        return extract_text(str(path))
+        lines = []
+        for page_layout in extract_pages(str(path)):
+            # Get all text elements
+            elements = []
+            for element in page_layout:
+                if isinstance(element, LTTextContainer):
+                    for text_line in element:
+                        elements.append(text_line)
+            
+            # Sort by Y descending (top of page first), then X ascending
+            elements.sort(key=lambda e: (-e.y1, e.x0))
+            
+            # Group by Y with some tolerance to reconstruct lines
+            current_y = None
+            current_line = []
+            tolerance = 5 # points
+            
+            for e in elements:
+                if current_y is None or abs(e.y1 - current_y) < tolerance:
+                    current_line.append(e)
+                    if current_y is None:
+                        current_y = e.y1
+                else:
+                    # Flush current line
+                    current_line.sort(key=lambda x: x.x0)
+                    lines.append(" ".join(el.get_text().strip() for el in current_line))
+                    current_line = [e]
+                    current_y = e.y1
+            
+            if current_line:
+                current_line.sort(key=lambda x: x.x0)
+                lines.append(" ".join(el.get_text().strip() for el in current_line))
+                
+        return "\n".join(lines).strip()
     except Exception:
         return None
 
@@ -120,10 +158,11 @@ def parse_atoss_text(text: str) -> Tuple[List[Entry], Dict[str, str]]:
 
     in_day = False
     day_dom: Optional[int] = None
+    day_weekday: Optional[str] = None
     day_lines: List[str] = []
 
     def flush_day():
-        nonlocal day_lines, day_dom, in_day
+        nonlocal day_lines, day_dom, in_day, day_weekday
         if not in_day or day_dom is None or current_month is None or current_year is None:
             day_lines = []
             in_day = False
@@ -147,6 +186,11 @@ def parse_atoss_text(text: str) -> Tuple[List[Entry], Dict[str, str]]:
                         loc = "remote"
                     else:
                         loc = candidate
+
+                # NEW: Detect Holidays (Feiertage)
+                # If target hours are 000 on a weekday, it's a holiday (unless another code like U/K is already set)
+                if loc in ("office", "") and parts[0].startswith("000") and day_weekday in ("Mo", "Di", "Mi", "Do", "Fr"):
+                    loc = "F"
 
         # Double check for 'ma' anywhere in the day's lines
         for ln in day_lines:
@@ -201,6 +245,7 @@ def parse_atoss_text(text: str) -> Tuple[List[Entry], Dict[str, str]]:
         day_lines = []
         in_day = False
         day_dom = None
+        day_weekday = None
 
     for raw in lines:
         mh = MONTH_HEADER_RE.search(raw)
@@ -213,6 +258,7 @@ def parse_atoss_text(text: str) -> Tuple[List[Entry], Dict[str, str]]:
         if dh and current_month and current_year:
             flush_day()
             in_day = True
+            day_weekday = dh.group(1)
             day_dom = int(dh.group(2))
             rest = raw[dh.end():].strip()
             day_lines = [rest] if rest else []
