@@ -47,7 +47,8 @@ def _make_id(date_s: str, start_s: str, end_s: str) -> str:
     return f"{date_s}_{start_s}-{end_s}"
 
 
-def merge_entries(entries: List[Entry]) -> List[Entry]:
+def merge_entries(entries: List[Entry], extra_day_codes: Dict[str, str] = None) -> List[Entry]:
+    extra_day_codes = extra_day_codes or {}
     # Dedupe by (date, start, end). Combine sources and choose location.
     merged: Dict[Tuple[str, str, str], Entry] = {}
     for e in entries:
@@ -60,6 +61,9 @@ def merge_entries(entries: List[Entry]) -> List[Entry]:
         except Exception:
             pass
 
+        src_val = e.get("source", "")
+        srcs = [s.strip() for s in src_val.split(",") if s.strip()]
+
         if key not in merged:
             merged[key] = {
                 "id": _make_id(e["date"], e["start"], e["end"]),
@@ -68,32 +72,43 @@ def merge_entries(entries: List[Entry]) -> List[Entry]:
                 "end": e["end"],
                 "minutes": e.get("minutes", 0),
                 "location": e.get("location", ""),
-                "sources": [e.get("source", "")] if e.get("source") else [],
+                "sources": srcs,
             }
         else:
             m = merged[key]
-            # append source if new
-            src = e.get("source", "")
-            if src and src not in m["sources"]:
-                m["sources"].append(src)
-            # location preference: prefer 'work' entry's location; otherwise if any 'remote'
+            for s in srcs:
+                if s not in m["sources"]:
+                    m["sources"].append(s)
+            
+            # location preference: 
+            # 1. Manual edits (source: manual) take priority if they are not '-'
+            # 2. Atoss (source: work) takes priority over App if App is empty or '-'
+            # 3. If any source explicitly says 'remote', prefer that.
             mloc = m.get("location") or ""
             eloc = e.get("location") or ""
-            # If current is empty and new has value, take it
-            if not mloc and eloc:
+            
+            # Use 'manual' if it appears in any of the current entry's sources
+            if "manual" in srcs and eloc not in ("", "-"):
                 m["location"] = eloc
-            # Prefer work over app
-            elif src == "work":
-                m["location"] = eloc or mloc
-            # Otherwise, if any says remote, set remote
+            elif "work" in srcs:
+                if eloc and (not mloc or mloc == "-"):
+                    m["location"] = eloc
             elif eloc == "remote":
                 m["location"] = "remote"
             # minutes should match; keep existing
 
     # Make location defaults explicit
     for m in merged.values():
-        if not m.get("location"):
-            m["location"] = "office"
+        loc = m.get("location")
+        if not loc or loc == "-":
+            # Try to look up in extra_day_codes (e.g. from Atoss)
+            # This applies markers like 'ma' (remote) or 'K' (sick) to the whole day
+            d_code = extra_day_codes.get(m["date"])
+            if d_code:
+                m["location"] = d_code
+            else:
+                # If no specific discovery, keep as unknown
+                m["location"] = "-"
     # Sort
     return sorted(merged.values(), key=lambda r: (r["date"], r["start"], r["end"]))
 
@@ -110,11 +125,15 @@ def _overlap(a: Entry, b: Entry) -> int:
     return max(0, _minutes_between(start, end))
 
 
-def validate(entries_merged: List[Entry]) -> Dict[str, Any]:
+def validate(entries_merged: List[Entry], extra_day_codes: Dict[str, str] = None) -> Dict[str, Any]:
+    extra_day_codes = extra_day_codes or {}
     # Group by date
     by_day: Dict[str, List[Entry]] = {}
     for e in entries_merged:
         by_day.setdefault(e["date"], []).append(e)
+
+    # Consider all days with entries PLUS all days with special status codes
+    all_dates = set(by_day.keys()) | {d for d, c in extra_day_codes.items() if c in ("K", "S")}
 
     issues: List[Dict[str, Any]] = []
     days: List[Dict[str, Any]] = []
@@ -125,7 +144,11 @@ def validate(entries_merged: List[Entry]) -> Dict[str, Any]:
     S_MIN = 7 * 60 + 48  # 7:48
     D_MAX = 10 * 60       # 10:00
 
-    for d, items in sorted(by_day.items()):
+    for d in sorted(all_dates):
+        items = by_day.get(d, [])
+        code = extra_day_codes.get(d, "").upper()
+        soll_minutes = 0 if code in ("K", "S") else S_MIN
+
         # Sort intervals by start
         items.sort(key=lambda r: (r["start"], r["end"]))
 
@@ -220,8 +243,8 @@ def validate(entries_merged: List[Entry]) -> Dict[str, Any]:
                 "gross_minutes": gross,
                 "break_minutes": break_min,
                 "net_minutes": gross,  # net excludes breaks from entries, so same as gross
-                "soll_minutes": S_MIN,
-                "soll_delta_minutes": gross - S_MIN,
+                "soll_minutes": soll_minutes,
+                "soll_delta_minutes": gross - soll_minutes,
             },
         })
 

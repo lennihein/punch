@@ -12,6 +12,12 @@ TARGET_MINUTES_PER_DAY = 468
 DEFAULT_COLUMNS: Sequence[str] = ("start", "end", "duration", "location", "source", "issues")
 MINIMAL_COLUMNS: Sequence[str] = ("start", "end", "duration", "issues")
 
+STATUS_MAP = {
+    "K": "Krank",
+    "S": "Sonderurlaub",
+}
+
+
 
 def _load_context(files: List[Path]) -> Dict[str, Any]:
     entries: List[Dict[str, Any]] = []
@@ -143,7 +149,8 @@ def summarize_issues(issues: Iterable[Dict[str, Any]]) -> List[str]:
     return [_format_issue_summary(it) for it in sorted_issues]
 
 
-def find_empty_workdays(entries: Iterable[Dict[str, Any]], days: Iterable[Dict[str, Any]]) -> List[str]:
+def find_empty_workdays(entries: Iterable[Dict[str, Any]], days: Iterable[Dict[str, Any]], day_codes: Dict[str, str] = None) -> List[str]:
+    day_codes = day_codes or {}
     entry_dates: List[_date] = []
     month_keys: set[tuple[int, int]] = set()
 
@@ -183,8 +190,12 @@ def find_empty_workdays(entries: Iterable[Dict[str, Any]], days: Iterable[Dict[s
         last_day = calendar.monthrange(year, month)[1]
         cur = month_start
         while cur.month == month:
+            iso = cur.isoformat()
+            # Skip if we have entries OR if it's marked as Sick/Special Leave
             if cur.weekday() < 5 and cur not in have_entries:
-                warnings.append(cur.strftime("%Y-%m-%d (%A)"))
+                code = day_codes.get(iso, "")
+                if code not in ("K", "S"):
+                    warnings.append(cur.strftime("%Y-%m-%d (%A)"))
             cur += timedelta(days=1)
 
     return warnings
@@ -194,7 +205,11 @@ def render_report(entries: Iterable[Dict[str, Any]],
                   issues: Iterable[Dict[str, Any]],
                   days: Iterable[Dict[str, Any]],
                   *,
-                  columns: Sequence[str] = DEFAULT_COLUMNS) -> str:
+                  columns: Sequence[str] = DEFAULT_COLUMNS,
+                  day_notes: Dict[str, str] = None,
+                  day_codes: Dict[str, str] = None) -> str:
+    day_notes = day_notes or {}
+    day_codes = day_codes or {}
     entries_list = [dict(e) for e in entries]
     if not entries_list:
         return "No entries available."
@@ -270,11 +285,39 @@ def render_report(entries: Iterable[Dict[str, Any]],
         lines.append("Issues: none")
     lines.append("")
 
-    empty_workdays = find_empty_workdays(entries_list, days_map.values())
-    if empty_workdays:
+    # Separate empty workdays into real empty ones and absences (K/S)
+    empty_warnings = find_empty_workdays(entries_list, days_map.values(), day_codes=day_codes)
+    
+    # Also find absences to list them explicitly
+    absences = []
+    for d_str, code in sorted(day_codes.items()):
+        if code.upper() in ("K", "S"):
+            # Check if there were any entries (unlikely but possible)
+            if d_str not in entries_by_day:
+                label = f"{d_str} ({_weekday_label(d_str)})"
+                absences.append((label, code))
+
+    if absences:
+        lines.append("Absences:")
+        for label, code in absences:
+            label_code = STATUS_MAP.get(code.upper(), code)
+            lines.append(f"- {label} [{label_code}]")
+        lines.append("")
+
+    if empty_warnings:
         lines.append("Empty workdays without entries:")
-        for label in empty_workdays:
-            lines.append(f"- {label}")
+        for label in empty_warnings:
+            dt_part = label.split(" ")[0]
+            note = day_notes.get(dt_part)
+            code = day_codes.get(dt_part)
+            
+            suffix = ""
+            if code and code != "office":
+                label_code = STATUS_MAP.get(code.upper(), code)
+                suffix += f" [{label_code}]"
+            if note:
+                suffix += f" -> {note}"
+            lines.append(f"- {label}{suffix}")
     else:
         lines.append("Empty workdays without entries: none")
     lines.append("")
@@ -340,26 +383,58 @@ def render_monthly_report(files: List[Path]) -> str:
     return render_report(ctx["entries"], ctx["issues"], ctx["days"], columns=DEFAULT_COLUMNS)
 
 
-def render_review_report(result: Dict[str, Any]) -> str:
+def render_review_report(result: Dict[str, Any], day_notes: Dict[str, str] = None, day_codes: Dict[str, str] = None) -> str:
     entries = result.get("entries", []) or []
     issues = result.get("issues", []) or []
     days = result.get("days", []) or []
-    return render_report(entries, issues, days, columns=DEFAULT_COLUMNS)
+    return render_report(entries, issues, days, columns=DEFAULT_COLUMNS, day_notes=day_notes, day_codes=day_codes)
 
 
 DAY_LINE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\b")
 ENTRY_LINE_RE = re.compile(r"^\s{2,}(\d{2}:\d{2})\s+(\d{2}:\d{2})")
 
 
-def parse_report_entries(path: Path) -> List[Dict[str, Any]]:
+def parse_report_entries(path: Path) -> Dict[str, Any]:
     entries: List[Dict[str, Any]] = []
+    day_notes: Dict[str, str] = {}
+    day_codes: Dict[str, str] = {}
     current_date: str | None = None
+    in_empty_list = False
+
+    # Reverse map for STATUS_MAP
+    REV_STATUS = {v.lower(): k for k, v in STATUS_MAP.items()}
 
     for raw_line in path.read_text(encoding="utf-8").splitlines():
         line = raw_line.rstrip("\n")
         stripped = line.strip()
         if not stripped:
             continue
+        
+        if "Empty workdays without entries:" in stripped or "Absences:" in stripped:
+            in_empty_list = True
+            continue
+        
+        if in_empty_list:
+            # - 2025-09-03 (Wednesday) [Krank] -> Abteilungsausflug
+            if stripped.startswith("- "):
+                m = DAY_LINE_RE.search(stripped)
+                if m:
+                    date_s = m.group(1)
+                    if "->" in stripped:
+                        note = stripped.split("->", 1)[1].strip()
+                        day_notes[date_s] = note
+                    # Extract [Code]
+                    code_match = re.search(r"\[([^\]]+)\]", stripped)
+                    if code_match:
+                        code_val = code_match.group(1)
+                        # Map back "Krank" -> "K" etc.
+                        day_codes[date_s] = REV_STATUS.get(code_val.lower(), code_val)
+                continue
+            elif current_date or stripped.startswith("20"): # End of section if we see a day block
+                 in_empty_list = False
+            else:
+                continue
+
         if stripped.startswith("Month:") or stripped.startswith("Generated:") or stripped.startswith("Monthly delta"):
             continue
         if stripped.startswith("Total worked:") or stripped.startswith("Day issues:"):
@@ -376,28 +451,38 @@ def parse_report_entries(path: Path) -> List[Dict[str, Any]]:
 
         entry_match = ENTRY_LINE_RE.match(line)
         if entry_match and current_date:
-            start, end = entry_match.groups()
+            # Try to split by multiple spaces to get more columns
+            parts = re.split(r'\s{2,}', stripped)
+            # parts should be [start, end, duration, [location, [source, [issues]]]]
+            start = parts[0]
+            end = parts[1]
             try:
                 minutes = _minutes_between(_parse_time(start), _parse_time(end))
             except Exception:
                 continue
-            if minutes <= 0:
-                continue
+            
+            location = ""
+            source = "manual"
+            if len(parts) >= 4:
+                location = parts[3]
+            if len(parts) >= 5:
+                source = parts[4]
+
             entries.append({
                 "id": _make_id(current_date, start, end),
                 "date": current_date,
                 "start": start,
                 "end": end,
                 "minutes": minutes,
-                "location": "",
-                "source": "manual",
+                "location": location,
+                "source": source,
             })
 
-    return entries
+    return {"entries": entries, "day_notes": day_notes, "day_codes": day_codes}
 
 
-def render_reviewed_report(result: Dict[str, Any]) -> str:
+def render_reviewed_report(result: Dict[str, Any], day_notes: Dict[str, str] = None, day_codes: Dict[str, str] = None) -> str:
     entries = result.get("entries", []) or []
     issues = result.get("issues", []) or []
     days = result.get("days", []) or []
-    return render_report(entries, issues, days, columns=MINIMAL_COLUMNS)
+    return render_report(entries, issues, days, columns=MINIMAL_COLUMNS, day_notes=day_notes, day_codes=day_codes)

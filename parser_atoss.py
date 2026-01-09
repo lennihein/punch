@@ -2,7 +2,7 @@ import re
 from dataclasses import dataclass, asdict
 from datetime import datetime, date, time, timedelta
 from pathlib import Path
-from typing import Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple, Any
 
 
 # --- PDF text extraction helpers ---
@@ -99,11 +99,12 @@ def _pair_times(times: List[Tuple[str, str]]) -> List[Tuple[time, time]]:
 
 
 def _detect_location(line: str) -> str:
-    return "remote" if MA_TOKEN_RE.search(line) else "office"
+    return "remote" if MA_TOKEN_RE.search(line) else ""
 
 
-def parse_atoss_text(text: str) -> List[Entry]:
+def parse_atoss_text(text: str) -> Tuple[List[Entry], Dict[str, str]]:
     entries: List[Entry] = []
+    day_codes: Dict[str, str] = {}
 
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
 
@@ -129,61 +130,72 @@ def parse_atoss_text(text: str) -> List[Entry]:
             day_dom = None
             return
 
-        # Determine location: if any line has 'ma' => remote
+        # Determine location:
+        # Default to office. If we find 'ma', it's remote. 
+        # If we find another code (token after the plan), use that code.
         loc = "office"
+        if day_lines:
+            # First line part after header usually looks like: [PLAN] [CODE] [TIMES]...
+            # e.g. "748a ? 0:00" or "748a 08:30 12:00"
+            parts = day_lines[0].split()
+            if len(parts) >= 2:
+                candidate = parts[1]
+                # A code is a token that is not a time (no ':') 
+                # and not a standalone number (totals/meta)
+                if ":" not in candidate and not candidate.replace("-", "").isdigit():
+                    if candidate.lower() == "ma":
+                        loc = "remote"
+                    else:
+                        loc = candidate
+
+        # Double check for 'ma' anywhere in the day's lines
         for ln in day_lines:
             if MA_TOKEN_RE.search(ln):
                 loc = "remote"
                 break
 
         # Time token extraction
-        # Prefer tokens that are adjacent to 'k'/'a'; otherwise fall back to first two times on the day header line.
-        # Collect all time tokens in order across day lines until a totals-like field starts.
         time_tokens: List[Tuple[str, str]] = []
         saw_ka = False
         for ln in day_lines:
-            # If line looks like a totals/meta line, skip
             if BLOCK_END_RE.search(ln):
                 continue
-            # Extract pairs that have k/a around them
-            # pattern: (k )?HH:MM (k|a)?
-            for m in re.finditer(r"(?:\bk\b\s*)?([01]?\d|2[0-3]):([0-5]\d)(?:\s*\b[k|a]\b)?", ln):
+            for m in re.finditer(r"(?:\bk\b\s*)?([01]?\d|2[0-3]):([0-5]\d)(?:\s*\b[k|a]\b)?", ln, re.IGNORECASE):
                 hh, mm = m.group(1), m.group(2)
-                # Heuristic: accept only if near a k/a token in the same line
                 span = m.span()
                 context = ln[max(0, span[0]-4): span[1]+4]
-                if re.search(r"\b[ka]\b", context):
+                if re.search(r"\b[ka]\b", context, re.IGNORECASE):
                     time_tokens.append((hh, mm))
                     saw_ka = True
-            # If no k/a at all, we will fall back after loop
 
         if not saw_ka:
-            # Fallback: take the first two time tokens from the first day line
             if day_lines:
                 tkns = TIME_RE.findall(day_lines[0])
-                # Some lines include totals after the first two tokens; limit to first two
                 tkns = tkns[:2]
                 time_tokens.extend(tkns)
 
         pairs = _pair_times(time_tokens)
-
-        # Filter pairs by Rahmenzeit 06:00–20:00
         r_start = time(6, 0)
         r_end = time(20, 0)
         def in_rahmen(p: Tuple[time, time]) -> bool:
             s, e = p
             return (s >= r_start) and (e <= r_end) and (e > s)
 
+        current_iso = date(current_year, current_month, day_dom).isoformat()
+        
         for s, e in filter(in_rahmen, pairs):
-            d = date(current_year, current_month, day_dom).isoformat()
             entries.append(Entry(
                 source="work",
-                date=d,
+                date=current_iso,
                 start=_fmt_time(s),
                 end=_fmt_time(e),
                 minutes=_minutes_between(s, e),
                 location=loc,
             ))
+        
+        # Track the code even if no entries, unless it is default 'office'
+        if loc != "office":
+            day_codes[current_iso] = loc
 
         # Reset day state
         day_lines = []
@@ -191,41 +203,35 @@ def parse_atoss_text(text: str) -> List[Entry]:
         day_dom = None
 
     for raw in lines:
-        # Update month/year if header present
         mh = MONTH_HEADER_RE.search(raw)
         if mh:
             month_name, yr = mh.group(1), int(mh.group(2))
             current_month = month_map.get(month_name)
             current_year = yr
 
-        # Start of a new day block
         dh = DAY_HEADER_RE.match(raw)
         if dh and current_month and current_year:
-            # flush previous day
             flush_day()
             in_day = True
             day_dom = int(dh.group(2))
-            # store line without the leading day header tokens
             rest = raw[dh.end():].strip()
             day_lines = [rest] if rest else []
             continue
 
-        # If inside a day, collect continuation lines until a block end or next day
         if in_day:
             if DAY_HEADER_RE.match(raw) or DATE_RE.search(raw) or BLOCK_END_RE.search(raw):
                 flush_day()
-                # Re-process this line in outer loop (could be a new day)
-                # simple approach: treat as not in_day and continue normal loop handling
             else:
                 day_lines.append(raw)
 
-    # flush last day at EOF
     flush_day()
+    return entries, day_codes
 
-    return entries
 
-
-def parse_atoss_pdf(path: Path) -> List[dict]:
+def parse_atoss_pdf(path: Path) -> Dict[str, Any]:
     text = extract_text_for_debug(path)
-    entries = parse_atoss_text(text)
-    return [asdict(e) for e in entries]
+    entries, day_codes = parse_atoss_text(text)
+    return {
+        "entries": [asdict(e) for e in entries],
+        "day_codes": day_codes
+    }

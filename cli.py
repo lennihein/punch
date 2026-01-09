@@ -40,15 +40,37 @@ def _month_slug(result: dict) -> str:
 
 
 def run_merge(args: argparse.Namespace) -> int:
-    atoss_entries = parse_atoss_pdf(args.atoss_pdf)
+    atoss_data = parse_atoss_pdf(args.atoss_pdf)
+    atoss_entries = atoss_data.get("entries", [])
+    atoss_day_codes = atoss_data.get("day_codes", {})
     app_entries = parse_app_pdf(args.app_pdf)
 
-    merged_entries = merge_entries(list(atoss_entries) + list(app_entries))
-    result = validate(merged_entries)
-    report_text = render_review_report(result)
-
+    merged_entries = merge_entries(list(atoss_entries) + list(app_entries), extra_day_codes=atoss_day_codes)
+    result = validate(merged_entries, extra_day_codes=atoss_day_codes)
     month_slug = _month_slug(result)
     out_path = args.out if args.out else Path(f"{month_slug}.txt")
+
+    day_notes = {}
+    combined_day_codes = atoss_day_codes.copy()
+
+    if out_path.exists():
+        print(f"Existing report {out_path} found. Merging current edits...")
+        report_data = parse_report_entries(out_path)
+        existing_entries = report_data.get("entries", [])
+        day_notes = report_data.get("day_notes", {})
+        existing_day_codes = report_data.get("day_codes", {})
+        
+        # Merge day codes: existing (manual edits) take precedence
+        for d, c in existing_day_codes.items():
+            combined_day_codes[d] = c
+
+        if existing_entries:
+            # Re-merge everything including existing
+            merged_entries = merge_entries(list(atoss_entries) + list(app_entries) + list(existing_entries), extra_day_codes=combined_day_codes)
+            result = validate(merged_entries, extra_day_codes=combined_day_codes)
+    
+    report_text = render_review_report(result, day_notes=day_notes, day_codes=combined_day_codes)
+
     out_path.write_text(report_text, encoding="utf-8")
     print(f"Wrote review report to {out_path}")
 
@@ -60,11 +82,15 @@ def run_merge(args: argparse.Namespace) -> int:
     else:
         print("Issues summary: none")
 
-    empty_days = find_empty_workdays(merged_entries, result.get("days", []) or [])
+    empty_days = find_empty_workdays(merged_entries, result.get("days", []) or [], day_codes=atoss_day_codes)
     if empty_days:
         print("Empty workdays without entries:")
         for label in empty_days:
-            print(f"  {label}")
+            # Add code suffix for consistency in terminal
+            dt_part = label.split(" ")[0]
+            code = atoss_day_codes.get(dt_part)
+            suffix = f" [{code}]" if code and code != "office" else ""
+            print(f"  {label}{suffix}")
     else:
         print("Empty workdays without entries: none")
 
@@ -76,14 +102,17 @@ def run_merge(args: argparse.Namespace) -> int:
 
 
 def run_verify(args: argparse.Namespace) -> int:
-    manual_entries = parse_report_entries(args.report)
-    if not manual_entries:
+    report_data = parse_report_entries(args.report)
+    manual_entries = report_data.get("entries", [])
+    day_notes = report_data.get("day_notes", {})
+    day_codes = report_data.get("day_codes", {})
+    if not manual_entries and not day_notes and not day_codes:
         print(f"No entries found in {args.report}", file=sys.stderr)
         return 1
 
-    merged_manual = merge_entries(manual_entries)
-    result = validate(merged_manual)
-    report_text = render_reviewed_report(result)
+    merged_manual = merge_entries(manual_entries, extra_day_codes=day_codes)
+    result = validate(merged_manual, extra_day_codes=day_codes)
+    report_text = render_reviewed_report(result, day_notes=day_notes, day_codes=day_codes)
 
     month_slug = _month_slug(result)
     out_path = args.out if args.out else Path(f"{month_slug}.txt")
@@ -98,11 +127,14 @@ def run_verify(args: argparse.Namespace) -> int:
     else:
         print("Issues summary: none")
 
-    empty_days = find_empty_workdays(merged_manual, result.get("days", []) or [])
+    empty_days = find_empty_workdays(merged_manual, result.get("days", []) or [], day_codes=day_codes)
     if empty_days:
         print("Empty workdays without entries:")
         for label in empty_days:
-            print(f"  {label}")
+            dt_part = label.split(" ")[0]
+            code = day_codes.get(dt_part)
+            suffix = f" [{code}]" if code and code != "office" else ""
+            print(f"  {label}{suffix}")
     else:
         print("Empty workdays without entries: none")
 
