@@ -58,9 +58,11 @@ def _try_extract_text_pdfminer(path: Path) -> Optional[str]:
 
 
 def extract_text_for_debug(path: Path) -> str:
+    if not Path(path).exists():
+        raise FileNotFoundError(f"File not found: {path}")
     text = _try_extract_text_pdfminer(path)
     if not text:
-        raise RuntimeError("Failed to extract text. Ensure pdfminer-six is available in your environment (managed by flake.nix)")
+        raise RuntimeError(f"Failed to extract text from {path}. Ensure pdfminer-six is available in your environment (managed by flake.nix), and that the PDF is valid.")
     return text
 
 
