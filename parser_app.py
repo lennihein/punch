@@ -65,11 +65,7 @@ def parse_app_text(text: str) -> List[AppEntry]:
         s_h, s_m = int(s_hh), int(s_mm)
         e_h, e_m = int(e_hh), int(e_mm)
 
-        # Discard entries clearly outside 06:00–20:00 range
-        if not (6 <= s_h <= 20 and 6 <= e_h <= 20):
-            # Allow exact 20:00 end
-            if not (6 <= s_h <= 20 and e_h == 20 and e_m == 0):
-                continue
+        # (Removed filter that discards entries outside 06:00-20:00)
 
         d = date(year, month, dom).isoformat()
         minutes = _minutes_between(s_h, s_m, e_h, e_m)
