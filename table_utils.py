@@ -134,6 +134,9 @@ def _format_issue_summary(issue: Dict[str, Any]) -> str:
     if issue.get("type") == "outside_rahmenzeit":
         start = issue.get("start")
         end = issue.get("end")
+        message = issue.get("message")
+        if message and "Weekend" in message:
+            return f"{prefix}interval {start}-{end} on weekend is outside Rahmenarbeitszeit"
         return f"{prefix}interval {start}-{end} outside Rahmenarbeitszeit"
 
     if isinstance(issue.get("type"), str) and issue.get("type", "").startswith("overlap_"):
@@ -244,7 +247,12 @@ def render_report(entries: Iterable[Dict[str, Any]],
         if delta is None:
             delta = totals.get("delta_minutes")
         if delta is None:
-            delta = net - TARGET_MINUTES_PER_DAY
+            try:
+                dt = datetime.strptime(date_s, "%Y-%m-%d")
+                soll = 0 if dt.weekday() >= 5 else TARGET_MINUTES_PER_DAY
+            except Exception:
+                soll = TARGET_MINUTES_PER_DAY
+            delta = net - soll
         day_summaries[date_s] = {
             "net_minutes": int(net),
             "delta_minutes": int(delta),
@@ -262,9 +270,14 @@ def render_report(entries: Iterable[Dict[str, Any]],
                 except Exception:
                     minutes = 0
             total += int(minutes or 0)
+        try:
+            dt = datetime.strptime(date_s, "%Y-%m-%d")
+            soll = 0 if dt.weekday() >= 5 else TARGET_MINUTES_PER_DAY
+        except Exception:
+            soll = TARGET_MINUTES_PER_DAY
         day_summaries[date_s] = {
             "net_minutes": total,
-            "delta_minutes": total - TARGET_MINUTES_PER_DAY,
+            "delta_minutes": total - soll,
         }
 
     monthly_delta = sum(summary["delta_minutes"] for summary in day_summaries.values())

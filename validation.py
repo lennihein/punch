@@ -159,19 +159,23 @@ def validate(entries_merged: List[Entry], extra_day_codes: Dict[str, str] = None
         except ValueError:
             pass
         r_end = R_END_FRIDAY if (day_date and day_date.weekday() == 4) else R_END_DEFAULT
+        is_weekend = (day_date and day_date.weekday() >= 5)
+        if is_weekend:
+            soll_minutes = 0
 
         # Rahmenzeit + compute gross minutes
         gross = 0
         for e in items:
             s, e_t = _parse_time(e["start"]), _parse_time(e["end"])
-            if not (s >= R_START and e_t <= r_end):
+            if is_weekend or not (s >= R_START and e_t <= r_end):
+                msg = "Weekend work is outside Rahmenarbeitszeit" if is_weekend else f"Interval outside Rahmenarbeitszeit 06:00–{r_end.strftime('%H:%M')}"
                 issues.append({
                     "type": "outside_rahmenzeit",
                     "date": d,
                     "id": e.get("id"),
                     "start": e["start"],
                     "end": e["end"],
-                    "message": f"Interval outside Rahmenarbeitszeit 06:00–{r_end.strftime('%H:%M')}",
+                    "message": msg,
                 })
             gross += _minutes_between(s, e_t)
 
