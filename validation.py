@@ -133,7 +133,7 @@ def validate(entries_merged: List[Entry], extra_day_codes: Dict[str, str] = None
         by_day.setdefault(e["date"], []).append(e)
 
     # Consider all days with entries PLUS all days with special status codes
-    all_dates = set(by_day.keys()) | {d for d, c in extra_day_codes.items() if c in ("K", "S", "U", "F")}
+    all_dates = set(by_day.keys()) | {d for d, c in extra_day_codes.items() if c in ("K", "S", "U", "F", "ZA")}
 
     issues: List[Dict[str, Any]] = []
     days: List[Dict[str, Any]] = []
@@ -160,7 +160,7 @@ def validate(entries_merged: List[Entry], extra_day_codes: Dict[str, str] = None
             pass
         r_end = R_END_FRIDAY if (day_date and day_date.weekday() == 4) else R_END_DEFAULT
         is_weekend = (day_date and day_date.weekday() >= 5)
-        if is_weekend:
+        if is_weekend and code != "ZA":
             soll_minutes = 0
 
         # Rahmenzeit + compute gross minutes
