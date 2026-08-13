@@ -531,13 +531,17 @@ PDF_STATUS_MAP = {
 
 def map_pdf_location(loc_raw: str | None) -> str:
     loc = (loc_raw or '').strip()
+    if not loc:
+        return ''
     if loc == 'office':
         return 'Anwesenheit'
-    elif loc == 'DG':
+    elif loc.lower() == 'dg':
         return 'dg'
     elif loc in ('?', '-'):
         return 'ma'
-    return loc if loc else 'ma'
+    elif loc.upper() == 'ARZT':
+        return 'Arzt'
+    return loc
 
 
 def parse_month_for_pdf(filepath: Path) -> Dict[str, Any]:
