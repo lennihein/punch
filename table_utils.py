@@ -502,3 +502,193 @@ def render_reviewed_report(result: Dict[str, Any], day_notes: Dict[str, str] = N
     issues = result.get("issues", []) or []
     days = result.get("days", []) or []
     return render_report(entries, issues, days, columns=DEFAULT_COLUMNS, day_notes=day_notes, day_codes=day_codes)
+
+
+GERMAN_WEEKDAYS = {
+    'Mon': 'Mo',
+    'Tue': 'Di',
+    'Wed': 'Mi',
+    'Thu': 'Do',
+    'Fri': 'Fr',
+    'Sat': 'Sa',
+    'Sun': 'So'
+}
+
+GERMAN_MONTH_NAMES = {
+    1: 'Januar', 2: 'Februar', 3: 'März', 4: 'April',
+    5: 'Mai', 6: 'Juni', 7: 'Juli', 8: 'August',
+    9: 'September', 10: 'Oktober', 11: 'November', 12: 'Dezember'
+}
+
+PDF_STATUS_MAP = {
+    'K': 'Krank',
+    'ZA': 'ZA',
+    'F': 'Feiertag',
+    'U': 'Urlaub',
+    'S': 'Sonderurlaub'
+}
+
+
+def map_pdf_location(loc_raw: str | None) -> str:
+    loc = (loc_raw or '').strip()
+    if loc == 'office':
+        return 'Anwesenheit'
+    elif loc == 'DG':
+        return 'dg'
+    elif loc in ('?', '-'):
+        return 'ma'
+    return loc if loc else 'ma'
+
+
+def parse_month_for_pdf(filepath: Path) -> Dict[str, Any]:
+    res = parse_report_entries(filepath)
+    entries = res.get('entries', [])
+    day_codes = res.get('day_codes', {})
+
+    if entries:
+        first_date = entries[0]['date']
+    elif day_codes:
+        first_date = sorted(day_codes.keys())[0]
+    else:
+        first_date = _date.today().isoformat()
+
+    year, month = map(int, first_date.split('-')[:2])
+
+    entries_by_date: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for e in entries:
+        entries_by_date[e['date']].append(e)
+
+    num_days = calendar.monthrange(year, month)[1]
+    days_data = []
+
+    for day in range(1, num_days + 1):
+        dt = datetime(year, month, day).date()
+        iso = dt.isoformat()
+        day_entries = entries_by_date.get(iso, [])
+        code = day_codes.get(iso)
+
+        if dt.weekday() >= 5 and not day_entries:
+            continue
+
+        weekday_de = GERMAN_WEEKDAYS.get(dt.strftime('%a'), dt.strftime('%a'))
+        date_formatted = f"{dt.day:02d}.{dt.month:02d}.{dt.year}"
+        week_num = dt.isocalendar()[1]
+
+        formatted_intervals = []
+        formatted_locations = []
+        for e in day_entries:
+            start = e.get('start', '')
+            end = e.get('end', '')
+            loc = map_pdf_location(e.get('location', ''))
+            formatted_intervals.append(f"{start} – {end}")
+            formatted_locations.append(loc)
+
+        days_data.append({
+            'date_iso': iso,
+            'date_fmt': date_formatted,
+            'weekday': weekday_de,
+            'week_num': week_num,
+            'code': code,
+            'code_name': PDF_STATUS_MAP.get(code, code) if code else None,
+            'entries': day_entries,
+            'intervals': formatted_intervals,
+            'locations': formatted_locations
+        })
+
+    month_name = GERMAN_MONTH_NAMES.get(month, f"{month:02d}")
+    return {
+        'year': year,
+        'month': month,
+        'month_name': f"{month_name} {year}",
+        'days': days_data
+    }
+
+
+def render_pdf_typst(months_data: List[Dict[str, Any]]) -> str:
+    typst = [
+        '#set page(\n',
+        '  paper: "a4",\n',
+        '  margin: (top: 1.2cm, bottom: 1.2cm, left: 1.5cm, right: 1.5cm),\n',
+        '  header: none,\n',
+        '  footer: none\n',
+        ')\n\n',
+        '#set text(\n',
+        '  font: ("Inter", "Roboto", "DejaVu Sans"),\n',
+        '  size: 8.5pt,\n',
+        '  fill: rgb("#111111")\n',
+        ')\n\n',
+        '#show heading.where(level: 1): it => block(\n',
+        '  above: 0pt, below: 12pt,\n',
+        '  text(size: 12.5pt, weight: "bold", fill: rgb("#222222"))[#it.body]\n',
+        ')\n\n'
+    ]
+
+    for m_idx, m_data in enumerate(months_data):
+        if m_idx > 0:
+            typst.append('#pagebreak()\n')
+
+        typst.append(f"= {m_data['month_name']}\n\n")
+        typst.append('#table(\n')
+        typst.append('  columns: (70pt, 35pt, 170pt, 1fr),\n')
+        typst.append('  align: (center, center, left, left),\n')
+        typst.append('  stroke: (x, y) => if y == 0 { 0.4pt + rgb("#d0d0d0") } else { 0.3pt + rgb("#e0e0e0") },\n')
+        typst.append('  fill: (x, y) => if y == 0 { rgb("#f2f2f2") } else { none },\n')
+        typst.append('  table.header(\n')
+        typst.append('    [*Datum*], [*Tag*], [*Arbeitszeiten*], [*Standort / Status*]\n')
+        typst.append('  ),\n')
+
+        last_week = None
+        for day in m_data['days']:
+            cur_week = day['week_num']
+            is_new_week = (last_week is not None and cur_week != last_week)
+            last_week = cur_week
+
+            d_fmt = day['date_fmt']
+            w_fmt = day['weekday']
+
+            if day['code']:
+                code_label = day['code_name']
+                if is_new_week:
+                    typst.append('  table.hline(stroke: 1.2pt + rgb("#555555")),\n')
+                typst.append(f'  [{d_fmt}], [{w_fmt}], [—], [{code_label}],\n')
+            else:
+                intervals_str = ' \\ '.join(day['intervals'])
+                locations_str = ' \\ '.join(day['locations'])
+                if is_new_week:
+                    typst.append('  table.hline(stroke: 1.2pt + rgb("#555555")),\n')
+                typst.append(f'  [{d_fmt}], [{w_fmt}], [{intervals_str}], [{locations_str}],\n')
+
+        typst.append(')\n\n')
+
+    return ''.join(typst)
+
+
+def export_pdf_from_reports(report_paths: Sequence[Path], out_pdf_path: Path) -> Path:
+    import subprocess
+    import os
+
+    months_data = [parse_month_for_pdf(p) for p in report_paths]
+    typst_code = render_pdf_typst(months_data)
+
+    typ_temp_path = out_pdf_path.with_suffix('.typ')
+    typ_temp_path.write_text(typst_code, encoding='utf-8')
+
+    font_path_cmd = "nix eval --raw nixpkgs#inter.outPath 2>/dev/null || true"
+    inter_out = subprocess.check_output(font_path_cmd, shell=True, text=True).strip()
+    font_arg = []
+    if inter_out:
+        inter_ttf_dir = os.path.join(inter_out, 'share', 'fonts', 'truetype')
+        if os.path.exists(inter_ttf_dir):
+            font_arg = ['--font-path', inter_ttf_dir]
+
+    cmd = [
+        'nix', 'shell', 'nixpkgs#typst', 'nixpkgs#inter', '--command',
+        'typst', 'compile'
+    ] + font_arg + [str(typ_temp_path), str(out_pdf_path)]
+
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    if res.returncode != 0:
+        raise RuntimeError(f"Typst compile error: {res.stderr}")
+
+    return out_pdf_path
+

@@ -31,6 +31,18 @@ This overwrites `august_25.txt` with the condensed verified view and optionally 
 
 Pass `-o/--out` to either command if you want to override the default `<month>_<yy>.txt` location.
 
+### Generate Printable PDF Overview
+
+Generate an ink-saving, clean printable PDF overview (for easy ATOSS manual entry):
+
+```bash
+# Single month overview
+python cli.py pdf export_may_26.txt
+
+# Multiple months compiled into one PDF
+python cli.py pdf export_may_26.txt export_june_26.txt export_july_26.txt -o export_may_june_july_2026.pdf
+```
+
 Notes:
 - Location: maps token `ma` (case-insensitive, whole word) to `remote`; otherwise `office`.
 - App PDF: defaults to `remote`; lines containing `Norm` switch to `office` and `Mobil` confirm `remote`.

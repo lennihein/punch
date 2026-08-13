@@ -2,6 +2,10 @@
 *.pdf
 *.PDF
 
+# Typst and generated preview files
+*.typ
+*.png
+
 # Windows zone identifier sidecar streams copied over
 *:[Zz]one.Identifier*
 

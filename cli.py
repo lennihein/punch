@@ -8,6 +8,7 @@ from typing import Iterable
 from parser_atoss import parse_atoss_pdf
 from parser_app import parse_app_pdf
 from table_utils import (
+    export_pdf_from_reports,
     find_empty_workdays,
     parse_report_entries,
     render_review_report,
@@ -145,6 +146,35 @@ def run_verify(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_pdf(args: argparse.Namespace) -> int:
+    reports: List[Path] = args.reports
+    if not reports:
+        print("Error: No report files specified.", file=sys.stderr)
+        return 1
+
+    for r in reports:
+        if not r.exists():
+            print(f"Error: Report file {r} does not exist.", file=sys.stderr)
+            return 1
+
+    if args.out:
+        out_path = args.out
+    elif len(reports) == 1:
+        out_path = reports[0].with_suffix(".pdf")
+    else:
+        # Construct merged name from stem names
+        stems = [r.stem for r in reports]
+        out_path = Path(f"{'_'.join(stems)}.pdf")
+
+    try:
+        export_pdf_from_reports(reports, out_path)
+        print(f"Wrote PDF overview to {out_path}")
+        return 0
+    except Exception as e:
+        print(f"Error generating PDF: {e}", file=sys.stderr)
+        return 1
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="ATOSS/App PDF merge + review reports")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -161,6 +191,11 @@ def main(argv=None) -> int:
     p_verify.add_argument("--issues", type=Path, help="Optional path to write issues CSV")
     p_verify.add_argument("-o", "--out", type=Path, help="Write verified report to this file (defaults to <month>_<yy>.txt)")
     p_verify.set_defaults(func=run_verify)
+
+    p_pdf = sub.add_parser("pdf", help="Generate an ink-saving printable PDF overview from review report text files")
+    p_pdf.add_argument("reports", type=Path, nargs="+", help="One or more review report text files (e.g. export_may_26.txt)")
+    p_pdf.add_argument("-o", "--out", type=Path, help="Output PDF path (defaults to <month>_<yy>.pdf or combined name)")
+    p_pdf.set_defaults(func=run_pdf)
 
     args = parser.parse_args(argv)
     return args.func(args)
