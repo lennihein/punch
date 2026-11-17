@@ -44,7 +44,7 @@ def run_merge(args: argparse.Namespace) -> int:
     atoss_data = parse_atoss_pdf(args.atoss_pdf)
     atoss_entries = atoss_data.get("entries", [])
     atoss_day_codes = atoss_data.get("day_codes", {})
-    app_entries = parse_app_pdf(args.app_pdf)
+    app_entries = parse_app_pdf(args.app_pdf) if args.app_pdf else []
 
     merged_entries = merge_entries(list(atoss_entries) + list(app_entries), extra_day_codes=atoss_day_codes)
     result = validate(merged_entries, extra_day_codes=atoss_day_codes)
@@ -181,7 +181,7 @@ def main(argv=None) -> int:
 
     p_merge = sub.add_parser("merge", help="Parse PDFs, merge entries, and produce a review report")
     p_merge.add_argument("atoss_pdf", type=Path, help="ATOSS work PDF export")
-    p_merge.add_argument("app_pdf", type=Path, help="Timerecordlist app PDF export")
+    p_merge.add_argument("app_pdf", type=Path, nargs="?", default=None, help="Timerecordlist app PDF export (optional; manual entries in the report are merged too)")
     p_merge.add_argument("--issues", type=Path, help="Optional path to write issues CSV")
     p_merge.add_argument("-o", "--out", type=Path, help="Write review report to this file (defaults to <month>_<yy>.txt)")
     p_merge.set_defaults(func=run_merge)

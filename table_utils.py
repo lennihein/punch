@@ -673,9 +673,21 @@ def render_pdf_typst(months_data: List[Dict[str, Any]]) -> str:
     return ''.join(typst)
 
 
+def _typst_font_args(font_root: str) -> List[str]:
+    args: List[str] = []
+    root = Path(font_root)
+    if root.is_dir():
+        args += ['--font-path', str(root)]
+        for child in sorted(root.iterdir()):
+            if child.is_dir():
+                args += ['--font-path', str(child)]
+    return args
+
+
 def export_pdf_from_reports(report_paths: Sequence[Path], out_pdf_path: Path) -> Path:
     import subprocess
     import os
+    import shutil
 
     months_data = [parse_month_for_pdf(p) for p in report_paths]
     typst_code = render_pdf_typst(months_data)
@@ -683,18 +695,25 @@ def export_pdf_from_reports(report_paths: Sequence[Path], out_pdf_path: Path) ->
     typ_temp_path = out_pdf_path.with_suffix('.typ')
     typ_temp_path.write_text(typst_code, encoding='utf-8')
 
-    font_path_cmd = "nix eval --raw nixpkgs#inter.outPath 2>/dev/null || true"
-    inter_out = subprocess.check_output(font_path_cmd, shell=True, text=True).strip()
-    font_arg = []
-    if inter_out:
-        inter_ttf_dir = os.path.join(inter_out, 'share', 'fonts', 'truetype')
-        if os.path.exists(inter_ttf_dir):
-            font_arg = ['--font-path', inter_ttf_dir]
+    font_root = os.environ.get('ATOSS_TYPST_FONT_PATH', '')
+    font_arg = _typst_font_args(font_root) if font_root else []
 
-    cmd = [
-        'nix', 'shell', 'nixpkgs#typst', 'nixpkgs#inter', '--command',
-        'typst', 'compile'
-    ] + font_arg + [str(typ_temp_path), str(out_pdf_path)]
+    typst_bin = os.environ.get('ATOSS_TYPST_BIN') or shutil.which('typst')
+    if typst_bin:
+        cmd = [typst_bin, 'compile'] + font_arg + [str(typ_temp_path), str(out_pdf_path)]
+    else:
+        # Fallback for interactive nix dev shells without typst on PATH
+        font_path_cmd = "nix eval --raw nixpkgs#inter.outPath 2>/dev/null || true"
+        inter_out = subprocess.check_output(font_path_cmd, shell=True, text=True).strip()
+        nix_font_arg = []
+        if inter_out:
+            inter_ttf_dir = os.path.join(inter_out, 'share', 'fonts', 'truetype')
+            if os.path.exists(inter_ttf_dir):
+                nix_font_arg = ['--font-path', inter_ttf_dir]
+        cmd = [
+            'nix', 'shell', 'nixpkgs#typst', 'nixpkgs#inter', '--command',
+            'typst', 'compile'
+        ] + nix_font_arg + [str(typ_temp_path), str(out_pdf_path)]
 
     res = subprocess.run(cmd, capture_output=True, text=True)
     if res.returncode != 0:

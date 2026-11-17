@@ -8,7 +8,14 @@
     {
       devShells = forEachSystem (pkgs: {
         default = pkgs.mkShellNoCC {
-          packages = [ (pkgs.python3.withPackages (ps: [ ps.pdfminer-six ])) ];
+          packages = [
+            (pkgs.python3.withPackages (ps: [ ps.pdfminer-six ]))
+            pkgs.typst
+            pkgs.inter
+          ];
+          shellHook = ''
+            export ATOSS_TYPST_FONT_PATH="${pkgs.inter}/share/fonts"
+          '';
         };
       });
     };

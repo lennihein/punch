@@ -49,3 +49,59 @@ Notes:
 - Times are detected per line with the date; multiple start/end pairs per day are supported.
 - Reports include an issue summary ahead of the daily sections for quick scanning.
 - Weekdays in the month without any entries are listed so you can fill in holidays or missed logs explicitly.
+
+## Webapp (NixOS + Caddy + Authelia)
+
+`webapp.py` is a small stdlib-only web UI around the CLI pipeline, meant to run on a
+small VPS (1 vCPU / 1 GB is plenty). It binds to `127.0.0.1` only and rejects requests
+without a `Remote-User` header, so it must sit behind Caddy with Authelia forward auth.
+
+Since the TimeRecorder app export is no longer available on Android, the app PDF is
+optional everywhere: upload just the ATOSS PDF and type your entries directly into the
+report in the browser, then Merge → edit → Verify → download TXT/PDF.
+
+### Server setup
+
+Clone this repo to a stable path on the VPS (e.g. `/srv/atoss`) and import the module:
+
+```nix
+# configuration.nix
+{
+  imports = [ (import /srv/atoss/module.nix { src = /srv/atoss; }) ];
+
+  services.atoss-web = {
+    enable = true;
+    # defaults: port 8088, dataDir /var/lib/atoss-web
+    caddy = {
+      enable = true;                  # only if Caddy itself is managed by NixOS
+      domain = "times.example.com";
+      autheliaAddress = "127.0.0.1:9091";
+      autheliaLoginDomain = "auth.example.com";
+    };
+  };
+}
+```
+
+If Caddy runs outside NixOS (or you manage its config by hand), add this site block instead:
+
+```caddy
+times.example.com {
+    forward_auth 127.0.0.1:9091 {
+        uri /api/verify?rd=https://auth.example.com/
+        copy_headers Remote-User Remote-Groups Remote-Name Remote-Email
+    }
+    reverse_proxy 127.0.0.1:8088
+}
+```
+
+### Notes
+
+- Server runtime deps come from nixpkgs: python3 + pdfminer-six, plus a `typst` binary and
+  the Inter font for PDF rendering. The service runs as a dedicated user with
+  `ProtectSystem=strict`; only `/var/lib/atoss-web` is writable (back that up).
+- PDF rendering calls `typst` directly via `ATOSS_TYPST_BIN` / `ATOSS_TYPST_FONT_PATH`
+  (set by the module). Without them it falls back to `nix shell nixpkgs#typst` for
+  local use; the dev shell now also puts `typst` and Inter on PATH.
+- Per-user data lives in `/var/lib/atoss-web/<Remote-User>/` (`work/` + `reports/`).
+- Upload limit is 25 MB per request (`ATOSS_MAX_BODY`).
+- Only port 443 should be exposed; the app port is loopback-only.
