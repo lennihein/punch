@@ -198,7 +198,8 @@ def parse_atoss_text(text: str) -> Tuple[List[Entry], Dict[str, str]]:
             # If it's the first line, always consider its pairs (usually main work)
             if i == 0:
                 for p in _pair_times(line_times):
-                    all_pairs.add(p)
+                    if p[0] < p[1] or re.search(r"\b[ka]\b|\bdg\b|dienstgang", ln, re.IGNORECASE):
+                        all_pairs.add(p)
             
             # If the line has 'k', 'a', 'dg' or 'dienstgang', it's a marker line
             if re.search(r"\b[ka]\b|\bdg\b|dienstgang", ln, re.IGNORECASE):

@@ -18,6 +18,9 @@ STATUS_MAP = {
     "U": "Urlaub",
     "F": "Feiertag",
     "ZA": "Zeitausgleich",
+    "D": "Dienstreise",
+    "D1": "Dienstreise",
+    "D2": "Dienstreise",
 }
 
 
@@ -197,10 +200,10 @@ def find_empty_workdays(entries: Iterable[Dict[str, Any]], days: Iterable[Dict[s
         cur = month_start
         while cur.month == month:
             iso = cur.isoformat()
-            # Skip if we have entries OR if it's marked as Sick/Special Leave
+            # Skip if we have entries OR if it's marked as Sick/Special Leave/Dienstreise
             if cur.weekday() < 5 and cur not in have_entries:
                 code = day_codes.get(iso, "")
-                if code not in ("K", "S", "U", "F", "ZA"):
+                if code not in ("K", "S", "U", "F", "ZA", "D", "D1", "D2"):
                     warnings.append(cur.strftime("%Y-%m-%d (%A)"))
             cur += timedelta(days=1)
 
@@ -307,7 +310,7 @@ def render_report(entries: Iterable[Dict[str, Any]],
     # Also find absences to list them explicitly
     absences = []
     for d_str, code in sorted(day_codes.items()):
-        if code.upper() in ("K", "S", "U", "F", "ZA"):
+        if code.upper() in ("K", "S", "U", "F", "ZA", "D", "D1", "D2"):
             # Check if there were any entries (unlikely but possible)
             if d_str not in entries_by_day:
                 label = f"{d_str} ({_weekday_label(d_str)})"
@@ -525,7 +528,10 @@ PDF_STATUS_MAP = {
     'ZA': 'ZA',
     'F': 'Feiertag',
     'U': 'Urlaub',
-    'S': 'Sonderurlaub'
+    'S': 'Sonderurlaub',
+    'D': 'Dienstreise',
+    'D1': 'Dienstreise',
+    'D2': 'Dienstreise'
 }
 
 

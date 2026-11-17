@@ -20,3 +20,4 @@ out_*.json
 
 # Exported Timesheets
 export_*.txt
+*_*.txt
