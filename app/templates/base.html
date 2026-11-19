@@ -5,11 +5,23 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{% block title %}Punch!{% endblock %}</title>
   <link rel="manifest" href="/manifest.json">
-  <meta name="theme-color" content="#f6f7f9">
+  <meta name="theme-color" content="#f2f0eb">
+  <script>
+    (function () {
+      var theme = null;
+      try { theme = localStorage.getItem('punch_theme'); } catch (_) {}
+      if (theme !== 'dark' && theme !== 'light') {
+        theme = (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
+      }
+      document.documentElement.dataset.theme = theme;
+      var meta = document.querySelector('meta[name="theme-color"]');
+      if (meta) meta.setAttribute('content', theme === 'dark' ? '#131720' : '#f2f0eb');
+    })();
+  </script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/style.css?v=light5">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,100..900&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css?v=dark12">
 </head>
 <body>
   <header class="topbar">
@@ -23,6 +35,10 @@
         <a href="/months/{{ nav_ym }}" class="{% if active_nav == 'month' %}active{% endif %}">Month Editor</a>
         <a href="/settings" class="{% if active_nav == 'settings' %}active{% endif %}">Settings</a>
         <span class="user-pill">{{ user.display_name }} · {{ user.timezone }}</span>
+        <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle dark mode" title="Toggle dark mode">
+          <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+          <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+        </button>
       </nav>
     </div>
   </header>
@@ -118,6 +134,31 @@
           sessionStorage.setItem('atoss_scroll_path', window.location.pathname);
         } catch (_) {}
       });
+
+      function applyTheme(theme) {
+        document.documentElement.dataset.theme = theme;
+        var meta = document.querySelector('meta[name="theme-color"]');
+        if (meta) meta.setAttribute('content', theme === 'dark' ? '#131720' : '#f2f0eb');
+      }
+
+      const themeToggle = document.getElementById('theme-toggle');
+      if (themeToggle) {
+        themeToggle.addEventListener('click', function () {
+          const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+          applyTheme(next);
+          try { localStorage.setItem('punch_theme', next); } catch (_) {}
+        });
+      }
+
+      if (window.matchMedia) {
+        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function (e) {
+          var saved = null;
+          try { saved = localStorage.getItem('punch_theme'); } catch (_) {}
+          if (saved !== 'dark' && saved !== 'light') {
+            applyTheme(e.matches ? 'dark' : 'light');
+          }
+        });
+      }
     })();
 
     function toggleEditRow(id) {

@@ -63,6 +63,18 @@ app = FastAPI(title="Punch!", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(APP_DIR / "static")), name="static")
 
 
+@app.middleware("http")
+async def cache_headers(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/static/"):
+        # Static URLs are versioned via ?v=..., so they can be cached hard.
+        response.headers["Cache-Control"] = "public, max-age=3600"
+    else:
+        # Pages and APIs always revalidate so template/CSS version bumps are picked up.
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 # --- Pydantic payloads for JSON APIs ---
 
 class WatchPairRequest(BaseModel):

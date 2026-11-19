@@ -18,8 +18,8 @@
 
   {% if live.clocked_in %}
   <div>
-    <div class="muted">Active since <strong class="mono">{{ live.active_entry.start }}</strong> ({{ live.active_entry.date }})</div>
-    <div class="timer-big mono" id="live-elapsed"
+    <div class="muted">Active since <strong class="tnum">{{ live.active_entry.start }}</strong> ({{ live.active_entry.date }})</div>
+    <div class="timer-big" id="live-elapsed"
          data-start-hm="{{ live.active_entry.start }}"
          data-start-date="{{ live.active_entry.date }}"
          data-completed-min="{{ live.today_completed_minutes }}">
@@ -65,16 +65,16 @@
   <div class="stats-row {% if month_data.overall_balance %}stats-row-3{% else %}stats-row-2{% endif %}">
     <div class="stat-box">
       <div class="stat-label">Today Worked</div>
-      <div class="stat-value mono" id="live-today-total">{{ "%02d:%02d"|format(live.today_gross_minutes // 60, live.today_gross_minutes % 60) }}</div>
+      <div class="stat-value" id="live-today-total">{{ "%02d:%02d"|format(live.today_gross_minutes // 60, live.today_gross_minutes % 60) }}</div>
     </div>
     <div class="stat-box">
       <div class="stat-label">Breaks Today</div>
-      <div class="stat-value mono">{{ live.break_actual_minutes }}m / {{ live.break_required_minutes }}m</div>
+      <div class="stat-value">{{ live.break_actual_minutes }}m / {{ live.break_required_minutes }}m</div>
     </div>
     {% if month_data.overall_balance %}
     <div class="stat-box">
       <div class="stat-label">Total Balance</div>
-      <div class="stat-value mono" style="color:{% if month_data.overall_balance.total_minutes >= 0 %}var(--green){% else %}var(--amber){% endif %};">
+      <div class="stat-value" style="color:{% if month_data.overall_balance.total_minutes >= 0 %}var(--green-text){% else %}var(--amber-text){% endif %};">
         {{ month_data.overall_balance.total_fmt }}
       </div>
       {% if month_data.overall_balance.yesterday_fmt %}
@@ -110,7 +110,7 @@
   <div>
     {% for e in live.today_entries %}
     <div class="interval-pill">
-      <span class="mono"><strong>{{ e.start_time }} – {{ e.end_time or "active" }}</strong></span>
+      <span class="tnum"><strong>{{ e.start_time }} – {{ e.end_time or "active" }}</strong></span>
       <span class="badge {% if e.location == 'office' %}badge-pink{% elif e.location == 'remote' %}badge-cyan{% elif e.location == 'dg' %}badge-yellow{% endif %}">{{ e.location }}</span>
       {% for s in e.sources %}
       <span class="badge badge-purple">{{ s }}</span>
