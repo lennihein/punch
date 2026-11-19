@@ -1,0 +1,371 @@
+{% extends "base.html" %}
+{% block title %}{{ month.month_label }} · Punch!{% endblock %}
+
+{% block content %}
+<section class="card">
+  <div class="card-header">
+    <div>
+      <h1 class="card-title" style="font-size:1.25rem;">{{ month.month_label }} ({{ month.year_month }})</h1>
+      <p class="muted">{{ month.workdays_so_far }} workdays counted · Target {{ month.target_label }}/day</p>
+    </div>
+
+    <div class="btn-row">
+      <a href="/export/pdf?months={{ month.year_month }}&amp;t={{ pdf_ts }}" class="btn btn-primary" target="_blank">Print / Export PDF</a>
+    </div>
+  </div>
+
+  <div class="btn-row" style="justify-content:space-between;">
+    <div class="btn-row">
+      <span class="muted">Months:</span>
+      {% for ym in month.available_months %}
+      <a href="/months/{{ ym }}" class="btn btn-sm {% if ym == month.year_month %}btn-primary{% endif %} mono">{{ ym }}</a>
+      {% endfor %}
+    </div>
+
+    <form method="get" action="/export/pdf" target="_blank" class="btn-row">
+      <input type="text" name="months" value="{{ month.year_month }}" placeholder="2026-09,2026-10" style="width:170px;" class="mono">
+      <input type="hidden" name="t" value="{{ pdf_ts }}">
+      <button type="submit" class="btn btn-sm">Multi-Month PDF</button>
+    </form>
+  </div>
+
+  <div class="stats-row {% if month.overall_balance %}stats-row-2{% endif %}">
+    <div class="stat-box">
+      <div class="stat-label">Monthly Delta</div>
+      <div class="stat-value mono" style="color:{% if month.balance_delta_minutes >= 0 %}var(--green){% else %}var(--amber){% endif %};">
+        {{ month.balance_delta_fmt }}
+      </div>
+      {% if month.balance_delta_yesterday_fmt %}
+      <div class="stat-sub mono">Yesterday {{ month.balance_delta_yesterday_fmt }}</div>
+      {% endif %}
+    </div>
+    {% if month.overall_balance %}
+    <div class="stat-box">
+      <div class="stat-label">Total Balance{% if month.overall_balance.start_fmt %} · Start {{ month.overall_balance.start_fmt }}{% endif %}</div>
+      <div class="stat-value mono" style="color:{% if month.overall_balance.total_minutes >= 0 %}var(--green){% else %}var(--amber){% endif %};">
+        {{ month.overall_balance.total_fmt }}
+      </div>
+      {% if month.overall_balance.yesterday_fmt %}
+      <div class="stat-sub mono">Yesterday {{ month.overall_balance.yesterday_fmt }}</div>
+      {% endif %}
+    </div>
+    {% endif %}
+  </div>
+</section>
+
+<!-- Upload & Merge ATOSS PDF -->
+<section class="card">
+  <div class="card-header">
+    <div>
+      <h2 class="card-title">Upload &amp; Merge ATOSS PDF</h2>
+      <p class="muted">Import monthly ATOSS export PDFs (or legacy Timerecordlist PDF / .txt reports) and merge with Watch/Web punches.</p>
+    </div>
+    {% if month.atoss_imports %}
+    <span class="badge badge-green">{{ month.atoss_imports|length }} import{% if month.atoss_imports|length != 1 %}s{% endif %} in {{ month.year_month }}</span>
+    {% endif %}
+  </div>
+  <form method="post" action="/upload-atoss" enctype="multipart/form-data" class="dropzone" id="atoss-dropzone">
+    <div class="btn-row" style="justify-content: space-between;">
+      <input type="file" name="file" id="atoss-file-input" accept=".pdf,.txt" required>
+      <button type="submit" class="btn btn-primary">Upload &amp; Merge</button>
+    </div>
+  </form>
+  {% if month.atoss_imports %}
+  <div class="btn-row">
+    <span class="muted">Recent imports:</span>
+    {% for imp in month.atoss_imports %}
+    <span class="badge mono">{{ imp.filename }} · {{ imp.imported_at }}</span>
+    {% endfor %}
+  </div>
+  {% endif %}
+</section>
+
+<!-- Dedicated AI Month Review Assistant Card -->
+<section id="ai-assist" class="card ai-card">
+  <div class="card-header">
+    <div>
+      <h2 class="card-title">AI Month Review Assistant</h2>
+      <p class="muted">Review breaks, Rahmenzeit, overlaps, and suspicious days into a staged proposal before anything changes.</p>
+    </div>
+    {% if user.has_llm_configured %}
+    <span class="badge badge-green">AI Ready · {{ user.llm_provider }}{% if user.llm_model %} ({{ user.llm_model }}){% endif %}</span>
+    {% else %}
+    <span class="badge badge-amber">No AI Key Configured</span>
+    {% endif %}
+  </div>
+
+  {% if not user.has_llm_configured %}
+  <div class="alert alert-warn btn-row" style="justify-content:space-between;">
+    <span>No AI API key or endpoint is configured for your account. Add a Gemini, OpenAI-compatible, or Anthropic key in Settings to use AI review, or run an Offline Rule Scan.</span>
+    <a href="/settings" class="btn btn-sm btn-primary">Configure AI in Settings →</a>
+  </div>
+  {% endif %}
+
+  <div class="btn-row">
+    <span class="muted">Quick prompts:</span>
+    <button type="button" class="prompt-chip" onclick="setAiPrompt('Fix missing breaks & Rahmenzeit')">Fix missing breaks &amp; Rahmenzeit</button>
+    <button type="button" class="prompt-chip" onclick="setAiPrompt('Flag short or suspicious days')">Flag short or suspicious days</button>
+    <button type="button" class="prompt-chip" onclick="setAiPrompt('Resolve ATOSS overlaps')">Resolve ATOSS overlaps</button>
+  </div>
+
+  <form method="post" action="/months/{{ month.year_month }}/ai-assist" class="btn-row">
+    <input type="text" id="ai-instruction-input" name="instruction" placeholder="Instruction (e.g. 'Fix breaks, 14.09. was sick, flag anything off')" style="flex:1; min-width:240px;">
+    <button type="submit" name="mode" value="ai" class="btn btn-primary">Ask AI Assistant</button>
+    <button type="submit" name="mode" value="heuristic" class="btn">Offline Rule Scan</button>
+  </form>
+</section>
+
+<!-- Pending AI Proposals Drawer -->
+{% if month.pending_proposals %}
+<section id="proposals" class="card proposal-drawer">
+  <div class="card-header">
+    <div>
+      <h2 class="card-title">Pending AI Proposal{% if month.pending_proposals|length > 1 %}s ({{ month.pending_proposals|length }}){% endif %}</h2>
+      <p class="muted">Review proposed edits and suspicious days below. Nothing is applied until you accept.</p>
+    </div>
+  </div>
+
+  {% for prop in month.pending_proposals %}
+  <div class="card" style="background:var(--bg-dark);">
+    <div class="card-header">
+      <div>
+        <span class="badge badge-purple">{{ prop.source_label }}</span>
+        <strong style="margin-left:6px;">{{ prop.summary }}</strong>
+      </div>
+      <form method="post" action="/proposals/{{ prop.id }}/dismiss">
+        <button type="submit" class="btn btn-sm">Dismiss</button>
+      </form>
+    </div>
+
+    {% if prop.suspicious_days %}
+    <div>
+      <div class="muted" style="margin-bottom:6px;">Suspicious Days Checklist</div>
+      <ul class="list-clean">
+        {% for s in prop.suspicious_days %}
+        <li class="issue-item">
+          <div>
+            <a href="#day-{{ s.date }}" class="mono"><strong>{{ s.date }}</strong></a>:
+            <span>{{ s.reason }}</span>
+            {% if s.suggested_check %}
+            <div class="muted">Check: {{ s.suggested_check }}</div>
+            {% endif %}
+          </div>
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+
+    {% if prop.changes %}
+    <form method="post" action="/proposals/{{ prop.id }}/apply">
+      <div class="muted" style="margin-bottom:6px;">Proposed Diffs ({{ prop.changes|length }})</div>
+      <div class="list-clean" style="margin-bottom:10px;">
+        {% for ch in prop.changes %}
+        <label class="change-card">
+          <input type="checkbox" name="change_ids" value="{{ ch.id }}" {% if ch.accepted %}checked{% endif %} style="margin-top:4px;">
+          <div style="flex:1;">
+            <div>
+              <span class="badge badge-blue">{{ ch.op_label }}</span>
+              <a href="#day-{{ ch.date }}" class="mono"><strong>{{ ch.date }}</strong></a>
+              <span>{{ ch.reason }}</span>
+            </div>
+            <div class="diff-grid mono">
+              {% if ch.before %}
+              <span class="badge badge-red">
+                Before: {% for b in ch.before %}{{ b.start }}-{{ b.end }} ({{ b.location }}){% if not loop.last %}, {% endif %}{% endfor %}
+              </span>
+              {% endif %}
+              {% if ch.after %}
+              <span class="badge badge-green">
+                After:
+                {% if ch.op == 'set_day_code' %}
+                  Code {{ ch.day_code or (ch.after[0].day_code if ch.after is sequence else ch.after.day_code) }}
+                {% else %}
+                  {% for a in ch.after %}{{ a.start }}-{{ a.end }} ({{ a.location }}){% if not loop.last %}, {% endif %}{% endfor %}
+                {% endif %}
+              </span>
+              {% elif ch.day_code %}
+              <span class="badge badge-green">After: Code {{ ch.day_code }}</span>
+              {% endif %}
+            </div>
+          </div>
+        </label>
+        {% endfor %}
+      </div>
+      <div class="btn-row">
+        <button type="submit" class="btn btn-green">Accept Selected</button>
+        <button type="submit" name="accept_all" value="true" class="btn btn-primary">Accept All</button>
+      </div>
+    </form>
+    {% endif %}
+  </div>
+  {% endfor %}
+</section>
+{% endif %}
+
+<!-- Hard Issues & Quick Fixes Summary -->
+{% if month.hard_issues or month.soft_anomalies %}
+<section class="card">
+  <div class="card-header">
+    <h2 class="card-title">Issues & Soft Anomalies</h2>
+  </div>
+  <ul class="list-clean">
+    {% for iss in month.hard_issues %}
+    <li class="issue-item">
+      <div>
+        <span class="badge badge-red">{{ iss.label }}</span>
+        <a href="#day-{{ iss.date }}" class="mono"><strong>{{ iss.date }}</strong></a>
+        <span>{{ iss.message }}</span>
+      </div>
+      <div class="btn-row">
+        {% if iss.type == 'insufficient_breaks' %}
+        <form method="post" action="/months/{{ month.year_month }}/quick-fix">
+          <input type="hidden" name="fix_type" value="insert_break">
+          <input type="hidden" name="date_str" value="{{ iss.date }}">
+          <button type="submit" class="btn btn-sm btn-primary">Insert Break</button>
+        </form>
+        {% elif iss.type == 'outside_rahmenzeit' and 'Weekend' not in iss.message %}
+        <form method="post" action="/months/{{ month.year_month }}/quick-fix">
+          <input type="hidden" name="fix_type" value="shift_rahmenzeit">
+          <input type="hidden" name="date_str" value="{{ iss.date }}">
+          <input type="hidden" name="entry_id" value="{{ iss.id }}">
+          <button type="submit" class="btn btn-sm btn-primary">Shift into Rahmenzeit</button>
+        </form>
+        {% elif iss.type.startswith('overlap_') %}
+        <form method="post" action="/months/{{ month.year_month }}/quick-fix">
+          <input type="hidden" name="fix_type" value="resolve_overlap">
+          <input type="hidden" name="date_str" value="{{ iss.date }}">
+          <input type="hidden" name="mode" value="merge">
+          <button type="submit" class="btn btn-sm btn-primary">Merge Overlaps</button>
+        </form>
+        {% endif %}
+      </div>
+    </li>
+    {% endfor %}
+
+    {% for anom in month.soft_anomalies %}
+    <li class="issue-item">
+      <div>
+        <span class="badge badge-amber">{{ anom.label }}</span>
+        <a href="#day-{{ anom.date }}" class="mono"><strong>{{ anom.date }}</strong></a>
+        <span>{{ anom.message }}</span>
+      </div>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+<!-- Full Month Grid -->
+<section class="card">
+  <div class="card-header">
+    <h2 class="card-title">Daily Intervals & Codes</h2>
+    <span class="muted">Click an interval's Edit button or add missing intervals inline.</span>
+  </div>
+
+  <table class="month-table">
+    <thead>
+      <tr>
+        <th style="width:125px;">Datum</th>
+        <th style="width:110px;">Sum / Delta</th>
+        <th>Arbeitszeiten</th>
+        <th style="width:260px;">Status / Notiz / Fixes</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% set ns = namespace(last_week=None) %}
+      {% for day in month.days %}
+        {% set is_new_week = (ns.last_week is not none and day.week_num != ns.last_week) %}
+        {% set ns.last_week = day.week_num %}
+      <tr id="day-{{ day.date }}" class="{% if is_new_week %}week-divider{% endif %} {% if day.is_weekend %}day-row-weekend{% endif %} {% if day.is_today %}day-row-today{% endif %}">
+        <td>
+          <div class="mono"><strong>{{ day.date_fmt }}</strong></div>
+          <div class="muted">{{ day.weekday_de }} · KW {{ day.week_num }}</div>
+        </td>
+
+        <td class="mono">
+          <div>{{ day.worked_fmt }}</div>
+          <div class="muted" style="color:{% if day.delta_minutes >= 0 %}var(--green){% elif not day.is_future %}var(--amber){% endif %};">
+            {{ day.delta_fmt }}
+          </div>
+          {% if day.break_minutes > 0 %}
+          <div class="muted">Pause {{ day.break_minutes }}m</div>
+          {% endif %}
+        </td>
+
+        <td>
+          {% for e in day.entries %}
+          <div class="interval-pill">
+            <span class="mono"><strong>{{ e.start_time }} – {{ e.end_time or "active" }}</strong></span>
+            <span class="badge {% if e.location == 'office' %}badge-pink{% elif e.location == 'remote' %}badge-cyan{% elif e.location == 'dg' %}badge-yellow{% endif %}">{{ e.location }}</span>
+            {% for s in e.sources %}
+            <span class="badge badge-purple">{{ s }}</span>
+            {% endfor %}
+            <button type="button" class="btn btn-sm" onclick="toggleEditRow({{ e.id }})">Edit</button>
+            <form method="post" action="/entries/{{ e.id }}/delete" style="display:inline;">
+              <input type="hidden" name="year_month" value="{{ month.year_month }}">
+              <button type="submit" class="btn btn-sm btn-red">×</button>
+            </form>
+          </div>
+          <form id="edit-entry-{{ e.id }}" method="post" action="/entries/{{ e.id }}/update" style="display:none; gap:6px; flex-wrap:wrap; margin-bottom:6px; align-items:center;">
+            <input type="hidden" name="year_month" value="{{ month.year_month }}">
+            <input type="time" name="start_time" value="{{ e.start_time }}" required>
+            <input type="time" name="end_time" value="{{ e.end_time or '' }}">
+            <select name="location">
+              <option value="remote" {% if e.location == 'remote' %}selected{% endif %}>remote</option>
+              <option value="office" {% if e.location == 'office' %}selected{% endif %}>office</option>
+              <option value="dg" {% if e.location == 'dg' %}selected{% endif %}>dg</option>
+              <option value="-" {% if e.location == '-' %}selected{% endif %}>-</option>
+            </select>
+            <button type="submit" class="btn btn-sm btn-primary">Save</button>
+          </form>
+          {% endfor %}
+
+          <form method="post" action="/months/{{ month.year_month }}/entries" class="btn-row" style="margin-top:4px;">
+            <input type="hidden" name="work_date" value="{{ day.date }}">
+            <input type="time" name="start_time" required style="padding:4px 6px; font-size:0.78rem;">
+            <input type="time" name="end_time" required style="padding:4px 6px; font-size:0.78rem;">
+            <select name="location" style="padding:4px 6px; font-size:0.78rem;">
+              <option value="remote">remote</option>
+              <option value="office">office</option>
+              <option value="dg">dg</option>
+            </select>
+            <button type="submit" class="btn btn-sm">+ Add</button>
+          </form>
+        </td>
+
+        <td>
+          <form method="post" action="/months/{{ month.year_month }}/days/{{ day.date }}" class="btn-row" style="margin-bottom:6px;">
+            <select name="day_code" style="padding:4px 6px; font-size:0.78rem;">
+              <option value="">—</option>
+              {% for c, label in status_map.items() %}
+              <option value="{{ c }}" {% if day.day_code == c %}selected{% endif %}>{{ c }} ({{ label }})</option>
+              {% endfor %}
+            </select>
+            <input type="text" name="note" value="{{ day.note }}" placeholder="Note" style="width:110px; padding:4px 6px; font-size:0.78rem;">
+            <button type="submit" class="btn btn-sm">Set</button>
+          </form>
+
+          {% for qf in day.quick_fixes %}
+          <form method="post" action="/months/{{ month.year_month }}/quick-fix" style="margin-bottom:4px;">
+            <input type="hidden" name="fix_type" value="{{ qf.fix_type }}">
+            <input type="hidden" name="date_str" value="{{ day.date }}">
+            {% if qf.entry_id %}<input type="hidden" name="entry_id" value="{{ qf.entry_id }}">{% endif %}
+            {% if qf.mode %}<input type="hidden" name="mode" value="{{ qf.mode }}">{% endif %}
+            <button type="submit" class="btn btn-sm btn-primary">{{ qf.label }}</button>
+          </form>
+          {% endfor %}
+
+          {% for iss in day.hard_issues %}
+          <div class="badge badge-red" style="margin-top:3px;">{{ iss.label }}</div>
+          {% endfor %}
+          {% for anom in day.soft_anomalies %}
+          <div class="badge badge-amber" style="margin-top:3px;">{{ anom.label }}</div>
+          {% endfor %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

@@ -1,0 +1,42 @@
+# Ignore all PDF files (case variations)
+*.pdf
+*.PDF
+
+# Typst and generated preview files
+*.typ
+*.png
+
+# Windows zone identifier sidecar streams copied over
+*:[Zz]one.Identifier*
+
+# Python artifacts
+__pycache__/
+*.pyc
+.venv/
+.direnv/
+
+# Scratch outputs from local runs
+out_*.json
+
+# Exported Timesheets
+export_*.txt
+*_*.txt
+
+# Local SQLite DB
+atoss.db*
+punch.db*
+
+# Local-only agent rules and machine-specific notes
+.agents/rules/local.md
+*.local.md
+GEMINI.md
+
+# Wear OS build artifacts
+wear/.gradle/
+wear/build/
+wear/local.properties
+wear/.idea/
+
+# Local import folders
+new_import/
+new_imports/

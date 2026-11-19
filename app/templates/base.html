@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Punch!{% endblock %}</title>
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#f6f7f9">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css?v=light5">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a href="/" class="brand">
+        <span class="brand-dot" style="{% if live and not live.clocked_in %}background:var(--text-dim);box-shadow:none;{% endif %}"></span>
+        <span>Punch!</span>
+      </a>
+      <nav class="nav">
+        <a href="/" class="{% if active_nav == 'dashboard' %}active{% endif %}">Dashboard</a>
+        <a href="/months/{{ nav_ym }}" class="{% if active_nav == 'month' %}active{% endif %}">Month Editor</a>
+        <a href="/settings" class="{% if active_nav == 'settings' %}active{% endif %}">Settings</a>
+        <span class="user-pill">{{ user.display_name }} · {{ user.timezone }}</span>
+      </nav>
+    </div>
+  </header>
+
+  <main class="container">
+    {% if flash %}
+    <div class="alert {% if flash_kind == 'error' %}alert-err{% elif flash_kind == 'warn' %}alert-warn{% else %}alert-ok{% endif %}">
+      {{ flash }}
+    </div>
+    {% endif %}
+    {% block content %}{% endblock %}
+  </main>
+
+  <script>
+    (function () {
+      const timerEl = document.getElementById('live-elapsed');
+      if (timerEl && timerEl.dataset.startHm && timerEl.dataset.startDate) {
+        const startDate = timerEl.dataset.startDate;
+        const parts = timerEl.dataset.startHm.split(':');
+        const baseCompleted = parseInt(timerEl.dataset.completedMin || '0', 10);
+        const totalEl = document.getElementById('live-today-total');
+
+        function tick() {
+          const now = new Date();
+          const yyyy = now.getFullYear();
+          const mm = String(now.getMonth() + 1).padStart(2, '0');
+          const dd = String(now.getDate()).padStart(2, '0');
+          const todayIso = yyyy + '-' + mm + '-' + dd;
+          if (todayIso !== startDate) return;
+
+          const startDt = new Date(now.getFullYear(), now.getMonth(), now.getDate(), parseInt(parts[0], 10), parseInt(parts[1], 10), 0);
+          const diffSec = Math.max(0, Math.floor((now - startDt) / 1000));
+          const hh = String(Math.floor(diffSec / 3600)).padStart(2, '0');
+          const mi = String(Math.floor((diffSec % 3600) / 60)).padStart(2, '0');
+          const ss = String(diffSec % 60).padStart(2, '0');
+          timerEl.textContent = hh + ':' + mi + ':' + ss;
+
+          if (totalEl) {
+            const totalMin = baseCompleted + Math.floor(diffSec / 60);
+            const th = String(Math.floor(totalMin / 60)).padStart(2, '0');
+            const tm = String(totalMin % 60).padStart(2, '0');
+            totalEl.textContent = th + ':' + tm;
+          }
+        }
+        tick();
+        setInterval(tick, 1000);
+      }
+
+      const dz = document.getElementById('atoss-dropzone');
+      const fileInput = document.getElementById('atoss-file-input');
+      if (dz && fileInput) {
+        dz.addEventListener('dragover', function (e) { e.preventDefault(); dz.classList.add('dragover'); });
+        dz.addEventListener('dragleave', function () { dz.classList.remove('dragover'); });
+        dz.addEventListener('drop', function (e) {
+          e.preventDefault();
+          dz.classList.remove('dragover');
+          if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+            fileInput.files = e.dataTransfer.files;
+          }
+        });
+      }
+
+      try {
+        const savedPath = sessionStorage.getItem('atoss_scroll_path');
+        const savedY = sessionStorage.getItem('atoss_scroll_y');
+        sessionStorage.removeItem('atoss_scroll_path');
+        sessionStorage.removeItem('atoss_scroll_y');
+        if (savedY !== null && savedPath === window.location.pathname) {
+          const targetY = parseInt(savedY, 10);
+          if (!Number.isNaN(targetY)) {
+            if ('scrollRestoration' in history) {
+              history.scrollRestoration = 'manual';
+            }
+            window.scrollTo(0, targetY);
+            requestAnimationFrame(function () { window.scrollTo(0, targetY); });
+            window.addEventListener('load', function () {
+              window.scrollTo(0, targetY);
+              if ('scrollRestoration' in history) {
+                history.scrollRestoration = 'auto';
+              }
+            }, { once: true });
+          }
+        }
+      } catch (_) {}
+
+      document.addEventListener('submit', function (e) {
+        const form = e.target;
+        if (!(form instanceof HTMLFormElement)) return;
+        if (!form.closest('.month-table, #today-editor, .issue-item, .btn-row')) return;
+        if (form.action && (form.action.includes('/ai-assist') || form.action.includes('/upload-atoss'))) return;
+        try {
+          sessionStorage.setItem('atoss_scroll_y', String(window.scrollY));
+          sessionStorage.setItem('atoss_scroll_path', window.location.pathname);
+        } catch (_) {}
+      });
+    })();
+
+    function toggleEditRow(id) {
+      const el = document.getElementById('edit-entry-' + id);
+      if (el) el.style.display = el.style.display === 'none' ? 'flex' : 'none';
+    }
+
+    function setAiPrompt(text) {
+      const input = document.getElementById('ai-instruction-input');
+      if (input) {
+        input.value = text;
+        input.focus();
+      }
+    }
+  </script>
+</body>
+</html>

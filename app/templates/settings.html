@@ -1,0 +1,203 @@
+{% extends "base.html" %}
+{% block title %}Settings · Punch!{% endblock %}
+
+{% block content %}
+<div class="grid-2">
+  <!-- Profile & Timezone -->
+  <section class="card">
+    <div class="card-header">
+      <h2 class="card-title">User Profile & Target</h2>
+    </div>
+    <form method="post" action="/settings/profile" class="list-clean">
+      <label class="muted">Display Name</label>
+      <input type="text" name="display_name" value="{{ user.display_name }}" required>
+
+      <label class="muted">Timezone (e.g. Europe/Berlin, Europe/Vienna)</label>
+      <input type="text" name="timezone" value="{{ user.timezone }}" required>
+
+      <label class="muted">Daily Target Minutes (492 = 08:12 Bundesbeamter, 468 = 07:48 TVöD)</label>
+      <input type="number" name="target_minutes" value="{{ user.target_minutes }}" min="60" max="720" required>
+
+      <label class="muted">Verbeamtung / AZV Switch Date (optional — switches from 07:48 / 10h Tarif to 08:12 / 13h AZV on this date)</label>
+      <input type="date" name="verbeamtung_date" value="{{ user.verbeamtung_date or '' }}">
+
+      <label class="muted">Balance Anchor Date (starting Glaz-Saldo before work on this date)</label>
+      <input type="date" name="balance_anchor_date" value="{{ user.balance_anchor_date or '' }}">
+
+      <label class="muted">Balance at Anchor Date (±HH:MM, e.g. +90:45 or +40:00; annual +40:00 cap applies at end of September)</label>
+      <input type="text" name="balance_anchor_hm" value="{{ user.balance_anchor_fmt or '' }}" placeholder="+40:00" class="mono">
+
+      <div style="margin-top:6px;">
+        <button type="submit" class="btn btn-primary">Save Profile</button>
+      </div>
+    </form>
+  </section>
+
+  <!-- Wear OS Device Pairing -->
+  <section class="card">
+    <div class="card-header">
+      <h2 class="card-title">Pair Wear OS Watch</h2>
+    </div>
+    <p class="muted">Generate a 6-digit numeric pairing code (valid for 5 minutes) and enter it on your Wear OS watch against <span class="mono">{{ request.url.scheme }}://{{ request.url.netloc }}</span>.</p>
+
+    {% if new_pairing_code %}
+    <div class="alert alert-ok">
+      <div class="muted">Enter this 6-digit code on your watch (expires {{ new_pairing_code.expires_at }}):</div>
+      <div class="code-box mono" style="margin-top:8px;">{{ new_pairing_code.code }}</div>
+    </div>
+    {% endif %}
+
+    <form method="post" action="/settings/pairing-code" class="btn-row">
+      <input type="text" name="device_name" placeholder="Device name (e.g. Pixel Watch)" value="Wear OS Watch" style="flex:1;">
+      <button type="submit" class="btn btn-green">Pair Wear OS Device</button>
+    </form>
+  </section>
+</div>
+
+<!-- Per-User LLM API Key -->
+<section class="card">
+  <div class="card-header">
+    <div>
+      <h2 class="card-title">AI Assist Configuration (Per-User API Key &amp; Endpoint)</h2>
+      <p class="muted">Configure your personal LLM provider, optional OpenAI-compatible base URL, model, and API key for the Month Editor's AI Assistant.</p>
+    </div>
+    {% if user.has_llm_configured %}
+    <span class="badge badge-green">AI Configured ({{ user.llm_provider }})</span>
+    {% else %}
+    <span class="badge badge-amber">No AI key saved</span>
+    {% endif %}
+  </div>
+
+  <form method="post" action="/settings/llm" class="list-clean">
+    <div class="grid-2">
+      <div class="list-clean">
+        <label class="muted">Provider</label>
+        <select name="llm_provider">
+          <option value="gemini" {% if user.llm_provider == 'gemini' %}selected{% endif %}>Google Gemini</option>
+          <option value="openai" {% if user.llm_provider == 'openai' %}selected{% endif %}>OpenAI / Compatible</option>
+          <option value="anthropic" {% if user.llm_provider == 'anthropic' %}selected{% endif %}>Anthropic Claude</option>
+        </select>
+      </div>
+      <div class="list-clean">
+        <label class="muted">Model (optional override)</label>
+        <input type="text" name="llm_model" value="{{ user.llm_model or '' }}" placeholder="e.g. gemini-2.5-flash, gpt-4o-mini, qwen2.5:14b">
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div class="list-clean">
+        <label class="muted">OpenAI-Compatible Endpoint Base URL (optional)</label>
+        <input type="url" name="llm_base_url" value="{{ user.llm_base_url or '' }}" placeholder="https://api.openai.com/v1 (e.g. OpenRouter, LiteLLM, Ollama)">
+      </div>
+      <div class="list-clean">
+        <label class="muted">API Key {% if user.has_llm_api_key %}(leave blank to keep saved key){% endif %}</label>
+        <input type="password" name="llm_api_key" placeholder="{% if user.has_llm_api_key %}•••••••••••• (saved){% else %}Paste your API key...{% endif %}" autocomplete="off">
+      </div>
+    </div>
+
+    <div class="btn-row" style="margin-top:6px;">
+      <button type="submit" name="action_mode" value="save" class="btn btn-primary">Save AI Settings</button>
+      <button type="submit" name="action_mode" value="test" class="btn btn-green">Save &amp; Test Connection</button>
+      {% if user.has_llm_api_key %}
+      <button type="submit" name="clear_api_key" value="true" class="btn btn-red">Clear Saved Key</button>
+      {% endif %}
+    </div>
+  </form>
+</section>
+
+<!-- API Tokens (Watch & External Agent) -->
+<section class="card">
+  <div class="card-header">
+    <div>
+      <h2 class="card-title">Bearer API Tokens</h2>
+      <p class="muted">Scoped tokens for `/api/watch/*` and `/api/agent/*` (Antigravity review helper).</p>
+    </div>
+  </div>
+
+  {% if created_token %}
+  <div class="alert alert-ok">
+    <div><strong>Copy your new {{ created_token.scope }} token now (shown once):</strong></div>
+    <div class="mono" style="margin-top:6px; word-break:break-all; padding:8px; background:var(--bg-dark); border-radius:6px;">{{ created_token.token }}</div>
+  </div>
+  {% endif %}
+
+  <form method="post" action="/settings/tokens" class="btn-row">
+    <input type="text" name="name" placeholder="Token name (e.g. Antigravity Agent)" required style="flex:1; min-width:200px;">
+    <select name="scope">
+      <option value="agent">agent (/api/agent/*)</option>
+      <option value="watch">watch (/api/watch/*)</option>
+    </select>
+    <button type="submit" class="btn btn-primary">Create Token</button>
+  </form>
+
+  {% if tokens %}
+  <table class="month-table">
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Scope</th>
+        <th>Created</th>
+        <th>Last Used</th>
+        <th>Status</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for t in tokens %}
+      <tr>
+        <td>{{ t.name }}</td>
+        <td><span class="badge">{{ t.scope }}</span></td>
+        <td class="mono muted">{{ t.created_at }}</td>
+        <td class="mono muted">{{ t.last_used_at or "never" }}</td>
+        <td>
+          {% if t.revoked_at %}
+          <span class="badge badge-red">revoked</span>
+          {% else %}
+          <span class="badge badge-green">active</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if not t.revoked_at %}
+          <form method="post" action="/settings/tokens/{{ t.id }}/revoke">
+            <button type="submit" class="btn btn-sm btn-red">Revoke</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+
+<!-- Authelia Multi-Identity Mapping -->
+<section class="card">
+  <div class="card-header">
+    <div>
+      <h2 class="card-title">Linked Authelia Identities</h2>
+      <p class="muted">Map multiple Authelia `Remote-User` or `Remote-Email` subjects to this dashboard account.</p>
+    </div>
+  </div>
+
+  <form method="post" action="/settings/identities" class="btn-row">
+    <input type="text" name="external_subject" placeholder="Authelia username or email (e.g. alice_alt)" required style="flex:1; min-width:220px;">
+    <button type="submit" class="btn btn-primary">Link Identity</button>
+  </form>
+
+  <ul class="list-clean">
+    {% for ident in identities %}
+    <li class="issue-item">
+      <div>
+        <span class="badge">{{ ident.provider }}</span>
+        <strong class="mono">{{ ident.external_subject }}</strong>
+      </div>
+      {% if identities|length > 1 %}
+      <form method="post" action="/settings/identities/{{ ident.id }}/delete">
+        <button type="submit" class="btn btn-sm btn-red">Remove</button>
+      </form>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endblock %}

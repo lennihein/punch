@@ -1,0 +1,173 @@
+{% extends "base.html" %}
+{% block title %}Dashboard · Punch!{% endblock %}
+
+{% block content %}
+<!-- Live Stempeluhr Card -->
+<section class="card">
+  <div class="card-header">
+    <div>
+      <h2 class="card-title">Live Stempeluhr</h2>
+      <p class="muted">{{ live.today_date }} ({{ user.timezone }})</p>
+    </div>
+    {% if live.clocked_in %}
+    <span class="badge badge-green">Clocked in · {{ live.active_entry.location }}</span>
+    {% else %}
+    <span class="badge">Clocked out</span>
+    {% endif %}
+  </div>
+
+  {% if live.clocked_in %}
+  <div>
+    <div class="muted">Active since <strong class="mono">{{ live.active_entry.start }}</strong> ({{ live.active_entry.date }})</div>
+    <div class="timer-big mono" id="live-elapsed"
+         data-start-hm="{{ live.active_entry.start }}"
+         data-start-date="{{ live.active_entry.date }}"
+         data-completed-min="{{ live.today_completed_minutes }}">
+      {{ "%02d:%02d:00"|format(live.active_elapsed_minutes // 60, live.active_elapsed_minutes % 60) }}
+    </div>
+  </div>
+
+  <div class="btn-row">
+    <form method="post" action="/punch">
+      <input type="hidden" name="action" value="out">
+      <button type="submit" class="btn btn-red">Clock Out</button>
+    </form>
+    {% if live.active_entry.location != 'office' %}
+    <form method="post" action="/punch">
+      <input type="hidden" name="action" value="switch_location">
+      <input type="hidden" name="location" value="office">
+      <button type="submit" class="btn">Switch to Office</button>
+    </form>
+    {% else %}
+    <form method="post" action="/punch">
+      <input type="hidden" name="action" value="switch_location">
+      <input type="hidden" name="location" value="remote">
+      <button type="submit" class="btn">Switch to Remote</button>
+    </form>
+    {% endif %}
+  </div>
+  {% else %}
+  <div class="muted">Not currently working. Start your next interval:</div>
+  <div class="btn-row">
+    <form method="post" action="/punch">
+      <input type="hidden" name="action" value="in">
+      <input type="hidden" name="location" value="remote">
+      <button type="submit" class="btn btn-green">Clock In (Remote)</button>
+    </form>
+    <form method="post" action="/punch">
+      <input type="hidden" name="action" value="in">
+      <input type="hidden" name="location" value="office">
+      <button type="submit" class="btn btn-primary">Clock In (Office)</button>
+    </form>
+  </div>
+  {% endif %}
+
+  <div class="stats-row {% if month_data.overall_balance %}stats-row-3{% else %}stats-row-2{% endif %}">
+    <div class="stat-box">
+      <div class="stat-label">Today Worked</div>
+      <div class="stat-value mono" id="live-today-total">{{ "%02d:%02d"|format(live.today_gross_minutes // 60, live.today_gross_minutes % 60) }}</div>
+    </div>
+    <div class="stat-box">
+      <div class="stat-label">Breaks Today</div>
+      <div class="stat-value mono">{{ live.break_actual_minutes }}m / {{ live.break_required_minutes }}m</div>
+    </div>
+    {% if month_data.overall_balance %}
+    <div class="stat-box">
+      <div class="stat-label">Total Balance</div>
+      <div class="stat-value mono" style="color:{% if month_data.overall_balance.total_minutes >= 0 %}var(--green){% else %}var(--amber){% endif %};">
+        {{ month_data.overall_balance.total_fmt }}
+      </div>
+      {% if month_data.overall_balance.yesterday_fmt %}
+      <div class="stat-sub mono">Yesterday {{ month_data.overall_balance.yesterday_fmt }}</div>
+      {% endif %}
+    </div>
+    {% endif %}
+  </div>
+
+  {% if live.warnings %}
+  <div class="alert alert-warn">
+    <strong>Compliance Notices:</strong>
+    <ul style="margin-left:16px; margin-top:4px;">
+      {% for w in live.warnings %}
+      <li>{{ w }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+</section>
+
+<!-- Current Day Editor Card -->
+<section id="today-editor" class="card">
+  <div class="card-header">
+    <div>
+      <h2 class="card-title">Today's Bookings · {{ live.today_date }}</h2>
+      <p class="muted">Edit today's intervals, add missed punches, or set today's status/absence code.</p>
+    </div>
+    <a href="/months/{{ current_ym }}#day-{{ live.today_date }}" class="btn btn-sm">Open in Month Editor →</a>
+  </div>
+
+  {% if live.today_entries %}
+  <div>
+    {% for e in live.today_entries %}
+    <div class="interval-pill">
+      <span class="mono"><strong>{{ e.start_time }} – {{ e.end_time or "active" }}</strong></span>
+      <span class="badge {% if e.location == 'office' %}badge-pink{% elif e.location == 'remote' %}badge-cyan{% elif e.location == 'dg' %}badge-yellow{% endif %}">{{ e.location }}</span>
+      {% for s in e.sources %}
+      <span class="badge badge-purple">{{ s }}</span>
+      {% endfor %}
+      <button type="button" class="btn btn-sm" onclick="toggleEditRow({{ e.id }})">Edit</button>
+      <form method="post" action="/entries/{{ e.id }}/delete" style="display:inline;">
+        <input type="hidden" name="year_month" value="{{ current_ym }}">
+        <input type="hidden" name="redirect_to" value="/#today-editor">
+        <button type="submit" class="btn btn-sm btn-red">×</button>
+      </form>
+    </div>
+    <form id="edit-entry-{{ e.id }}" method="post" action="/entries/{{ e.id }}/update" style="display:none; gap:6px; flex-wrap:wrap; margin-bottom:8px; align-items:center;">
+      <input type="hidden" name="year_month" value="{{ current_ym }}">
+      <input type="hidden" name="redirect_to" value="/#today-editor">
+      <input type="time" name="start_time" value="{{ e.start_time }}" required>
+      <input type="time" name="end_time" value="{{ e.end_time or '' }}">
+      <select name="location">
+        <option value="remote" {% if e.location == 'remote' %}selected{% endif %}>remote</option>
+        <option value="office" {% if e.location == 'office' %}selected{% endif %}>office</option>
+        <option value="dg" {% if e.location == 'dg' %}selected{% endif %}>dg</option>
+        <option value="-" {% if e.location == '-' %}selected{% endif %}>-</option>
+      </select>
+      <button type="submit" class="btn btn-sm btn-primary">Save</button>
+    </form>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="muted">No bookings logged for today yet.</p>
+  {% endif %}
+
+  <div class="today-editor-forms">
+    <form method="post" action="/months/{{ current_ym }}/entries" class="btn-row">
+      <input type="hidden" name="work_date" value="{{ live.today_date }}">
+      <input type="hidden" name="redirect_to" value="/#today-editor">
+      <span class="muted">Add interval:</span>
+      <input type="time" name="start_time" required>
+      <input type="time" name="end_time" required>
+      <select name="location">
+        <option value="remote">remote</option>
+        <option value="office">office</option>
+        <option value="dg">dg</option>
+      </select>
+      <button type="submit" class="btn btn-sm btn-primary">+ Add Interval</button>
+    </form>
+
+    <form method="post" action="/months/{{ current_ym }}/days/{{ live.today_date }}" class="btn-row">
+      <input type="hidden" name="redirect_to" value="/#today-editor">
+      <span class="muted">Day status:</span>
+      <select name="day_code">
+        <option value="">—</option>
+        {% for c, label in status_map.items() %}
+        <option value="{{ c }}" {% if live.today_day_code == c %}selected{% endif %}>{{ c }} ({{ label }})</option>
+        {% endfor %}
+      </select>
+      <input type="text" name="note" value="{{ live.today_note }}" placeholder="Note" style="min-width:160px;">
+      <button type="submit" class="btn btn-sm">Set</button>
+    </form>
+  </div>
+</section>
+{% endblock %}
