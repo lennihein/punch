@@ -168,8 +168,8 @@ def pwa_manifest() -> JSONResponse:
         "short_name": "Punch!",
         "start_url": "/",
         "display": "standalone",
-        "background_color": "#f6f7f9",
-        "theme_color": "#f6f7f9",
+        "background_color": "#0b1120",
+        "theme_color": "#0b1120",
     })
 
 
