@@ -4,7 +4,7 @@ Native Kotlin + Jetpack Compose for Wear OS app & Jetpack Tile for daily punchin
 
 ## App Icon
 
-Launcher icon source: [`icons/ic_launcher.svg`](icons/ic_launcher.svg) (512×512, editable SVG). The Android build uses the derived vector resources `res/drawable/ic_launcher_background.xml` + `res/drawable/ic_launcher_foreground.xml` via the adaptive icon `res/mipmap-anydpi-v26/ic_launcher.xml` (referenced as `android:icon`/`android:roundIcon` in the manifest). After editing the SVG, update the two vector drawables to match.
+Launcher icon source: [`icons/ic_launcher.svg`](icons/ic_launcher.svg) (512×512, editable SVG — GitHub renders it inline). The Android build uses the derived vector resources `res/drawable/ic_launcher_background.xml` + `res/drawable/ic_launcher_foreground.xml` via the adaptive icon `res/mipmap-anydpi-v26/ic_launcher.xml` (referenced as `android:icon`/`android:roundIcon` in the manifest). After editing the SVG, update the two vector drawables to match.
 
 ## Features
 
