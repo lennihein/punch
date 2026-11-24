@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <title>Punch! Wear OS app icon</title>
+  <rect width="512" height="512" fill="#10141D"/>
+  <path d="M256 106 A150 150 0 1 1 256 406 A150 150 0 1 1 256 106 Z" fill="none" stroke="#10B981" stroke-width="24"/>
+  <path d="M368 256 L386 256 M256 368 L256 386 M144 256 L126 256" fill="none" stroke="#10B981" stroke-width="16" stroke-linecap="round"/>
+  <path d="M256 256 L342.6 206" fill="none" stroke="#F8FAFC" stroke-width="14" stroke-linecap="round"/>
+  <path d="M256 256 L199.7 223.5" fill="none" stroke="#F8FAFC" stroke-width="20" stroke-linecap="round"/>
+  <path d="M256 78 A28 28 0 1 1 256 134 A28 28 0 1 1 256 78 Z" fill="#34D399"/>
+  <path d="M256 243 A13 13 0 1 1 256 269 A13 13 0 1 1 256 243 Z" fill="#34D399"/>
+</svg>

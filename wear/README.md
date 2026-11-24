@@ -2,6 +2,10 @@
 
 Native Kotlin + Jetpack Compose for Wear OS app & Jetpack Tile for daily punching against your Punch! server (e.g. `https://punch.example.com`).
 
+## App Icon
+
+Launcher icon source: [`icons/ic_launcher.svg`](icons/ic_launcher.svg) (512×512, editable SVG). The Android build uses the derived vector resources `res/drawable/ic_launcher_background.xml` + `res/drawable/ic_launcher_foreground.xml` via the adaptive icon `res/mipmap-anydpi-v26/ic_launcher.xml` (referenced as `android:icon`/`android:roundIcon` in the manifest). After editing the SVG, update the two vector drawables to match.
+
 ## Features
 
 - **6-Digit Pairing Flow:** Enter the 6-digit numeric code generated under `/settings` → **Pair Wear OS Device**. The returned Watch Bearer token is stored in `EncryptedSharedPreferences`.
