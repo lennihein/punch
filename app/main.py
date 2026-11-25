@@ -26,12 +26,14 @@ from app.auth import (
 from app.db import get_db, init_db, utc_now_iso
 from app.services import (
     AIConnectionError,
+    LLM_PROVIDERS,
     UI_STATUS_MAP,
     add_entry,
     apply_proposal,
     apply_quick_fix,
     create_proposal,
     delete_entry,
+    discover_models,
     dismiss_proposal,
     execute_punch,
     export_months_pdf,
@@ -40,8 +42,10 @@ from app.services import (
     get_month_data,
     import_uploaded_file,
     normalize_date,
+    normalize_reasoning,
     normalize_ym,
     parse_signed_hm,
+    resolve_llm_config,
     set_day_meta,
     test_llm_connection,
     update_entry,
@@ -374,6 +378,7 @@ def post_quick_fix(
 
 @app.post("/months/{ym}/ai-assist")
 async def post_ai_assist(
+    request: Request,
     ym: str,
     instruction: str = Form(""),
     mode: str = Form("ai"),
@@ -381,19 +386,40 @@ async def post_ai_assist(
     db: sqlite3.Connection = Depends(get_db),
 ):
     clean_ym = normalize_ym(ym)
+    wants_json = request.headers.get("x-requested-with") == "fetch"
     try:
-        await generate_inbuilt_ai_proposal(db, user, clean_ym, instruction=instruction, mode=mode)
+        generated = await generate_inbuilt_ai_proposal(db, user, clean_ym, instruction=instruction, mode=mode)
     except (AIConnectionError, HTTPException) as exc:
         msg = exc.detail if isinstance(exc, HTTPException) else str(exc)
+        if wants_json:
+            return JSONResponse({"ok": False, "error": str(msg)}, status_code=400)
         return RedirectResponse(
             url=f"/months/{clean_ym}?flash={quote(str(msg))}&kind=error#ai-assist",
             status_code=303,
         )
     except Exception as exc:
+        msg = f"AI review failed: {exc}"
+        if wants_json:
+            return JSONResponse({"ok": False, "error": msg}, status_code=500)
         return RedirectResponse(
-            url=f"/months/{clean_ym}?flash={quote(f'AI review failed: {exc}')}&kind=error#ai-assist",
+            url=f"/months/{clean_ym}?flash={quote(msg)}&kind=error#ai-assist",
             status_code=303,
         )
+    if wants_json:
+        month_data = get_month_data(db, user, clean_ym)
+        proposals_html = TEMPLATES.get_template("_proposals.html").render({"month": month_data})
+        proposal = (month_data["pending_proposals"] or [None])[0]
+        return JSONResponse({
+            "ok": True,
+            "proposals_html": proposals_html,
+            "proposal_id": proposal["id"] if proposal else None,
+            "summary": proposal["summary"] if proposal else "",
+            "changes": len(proposal["changes"]) if proposal else 0,
+            "suspicious_days": len(proposal["suspicious_days"]) if proposal else 0,
+            "reasoning": generated.get("reasoning") or "off",
+            "reasoning_tokens": int(generated.get("reasoning_tokens") or 0),
+            "reasoning_note": generated.get("reasoning_note") or "",
+        })
     msg = quote("Review proposal ready below")
     return RedirectResponse(url=f"/months/{clean_ym}?flash={msg}&kind=ok#proposals", status_code=303)
 
@@ -519,31 +545,33 @@ async def update_llm_settings(
     llm_model: str = Form(""),
     llm_base_url: str = Form(""),
     llm_api_key: str = Form(""),
+    llm_reasoning: str = Form("off"),
     clear_api_key: Optional[str] = Form(None),
     action_mode: str = Form("save"),
     user: Dict[str, Any] = Depends(get_current_user),
     db: sqlite3.Connection = Depends(get_db),
 ):
     clean_provider = (llm_provider or "gemini").strip().lower()
-    if clean_provider not in ("gemini", "openai", "anthropic"):
+    if clean_provider not in LLM_PROVIDERS:
         raise HTTPException(status_code=400, detail=f"Unsupported LLM provider '{llm_provider}'")
     clean_model = llm_model.strip() or None
     clean_base_url = llm_base_url.strip().rstrip("/") or None
+    clean_reasoning = normalize_reasoning(llm_reasoning)
 
     if clear_api_key and clear_api_key.lower() == "true":
         db.execute(
-            "UPDATE users SET llm_provider = ?, llm_model = ?, llm_base_url = ?, llm_api_key = NULL WHERE id = ?",
-            (clean_provider, clean_model, clean_base_url, user["id"]),
+            "UPDATE users SET llm_provider = ?, llm_model = ?, llm_base_url = ?, llm_reasoning = ?, llm_api_key = NULL WHERE id = ?",
+            (clean_provider, clean_model, clean_base_url, clean_reasoning, user["id"]),
         )
     elif llm_api_key.strip():
         db.execute(
-            "UPDATE users SET llm_provider = ?, llm_model = ?, llm_base_url = ?, llm_api_key = ? WHERE id = ?",
-            (clean_provider, clean_model, clean_base_url, llm_api_key.strip(), user["id"]),
+            "UPDATE users SET llm_provider = ?, llm_model = ?, llm_base_url = ?, llm_reasoning = ?, llm_api_key = ? WHERE id = ?",
+            (clean_provider, clean_model, clean_base_url, clean_reasoning, llm_api_key.strip(), user["id"]),
         )
     else:
         db.execute(
-            "UPDATE users SET llm_provider = ?, llm_model = ?, llm_base_url = ? WHERE id = ?",
-            (clean_provider, clean_model, clean_base_url, user["id"]),
+            "UPDATE users SET llm_provider = ?, llm_model = ?, llm_base_url = ?, llm_reasoning = ? WHERE id = ?",
+            (clean_provider, clean_model, clean_base_url, clean_reasoning, user["id"]),
         )
     db.commit()
 
@@ -556,6 +584,33 @@ async def update_llm_settings(
 
     msg = quote("AI settings saved")
     return RedirectResponse(url=f"/settings?flash={msg}&kind=ok", status_code=303)
+
+
+@app.post("/settings/llm/models")
+async def list_llm_models(
+    llm_provider: str = Form("gemini"),
+    llm_base_url: str = Form(""),
+    llm_api_key: str = Form(""),
+    user: Dict[str, Any] = Depends(get_current_user),
+    db: sqlite3.Connection = Depends(get_db),
+):
+    clean_provider = (llm_provider or "gemini").strip().lower()
+    if clean_provider not in LLM_PROVIDERS:
+        return JSONResponse({"ok": False, "error": f"Unsupported LLM provider '{llm_provider}'"}, status_code=400)
+
+    cfg = resolve_llm_config(user)
+    cfg["provider"] = clean_provider
+    cfg["api_key"] = llm_api_key.strip() or cfg["api_key"]
+    if clean_provider == "openai":
+        cfg["base_url"] = llm_base_url.strip().rstrip("/") or cfg["base_url"]
+    else:
+        cfg["base_url"] = LLM_PROVIDERS[clean_provider]["base_url"]
+
+    try:
+        models = await discover_models(cfg)
+    except AIConnectionError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    return JSONResponse({"ok": True, "provider": clean_provider, "models": models})
 
 
 @app.post("/settings/pairing-code")

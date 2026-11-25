@@ -26,6 +26,7 @@ def _row_to_user(row: sqlite3.Row) -> Dict[str, Any]:
     llm_provider = row["llm_provider"] if "llm_provider" in keys and row["llm_provider"] else "gemini"
     llm_model = row["llm_model"] if "llm_model" in keys else None
     llm_base_url = row["llm_base_url"] if "llm_base_url" in keys else None
+    llm_reasoning = row["llm_reasoning"] if "llm_reasoning" in keys and row["llm_reasoning"] else "off"
     anchor_date = row["balance_anchor_date"] if "balance_anchor_date" in keys else None
     anchor_minutes = row["balance_anchor_minutes"] if "balance_anchor_minutes" in keys else None
     verbeamtung_date = row["verbeamtung_date"] if "verbeamtung_date" in keys else None
@@ -45,8 +46,10 @@ def _row_to_user(row: sqlite3.Row) -> Dict[str, Any]:
         "llm_api_key": llm_key,
         "llm_model": llm_model,
         "llm_base_url": llm_base_url,
+        "llm_reasoning": llm_reasoning,
         "has_llm_api_key": bool(llm_key),
-        "has_llm_configured": bool(llm_key or (llm_provider == "openai" and llm_base_url)),
+        "has_llm_model": bool(llm_model),
+        "has_llm_configured": bool(llm_model) and bool(llm_key or (llm_provider == "openai" and llm_base_url)),
         "balance_anchor_date": anchor_date,
         "balance_anchor_minutes": int(anchor_minutes) if anchor_minutes is not None else None,
         "balance_anchor_fmt": anchor_fmt,

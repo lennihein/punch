@@ -110,31 +110,36 @@
   <div>
     {% for e in live.today_entries %}
     <div class="interval-pill">
-      <span class="tnum"><strong>{{ e.start_time }} – {{ e.end_time or "active" }}</strong></span>
-      <span class="badge {% if e.location == 'office' %}badge-pink{% elif e.location == 'remote' %}badge-cyan{% elif e.location == 'dg' %}badge-yellow{% endif %}">{{ e.location }}</span>
-      {% for s in e.sources %}
-      <span class="badge badge-purple">{{ s }}</span>
-      {% endfor %}
-      <button type="button" class="btn btn-sm" onclick="toggleEditRow({{ e.id }})">Edit</button>
-      <form method="post" action="/entries/{{ e.id }}/delete" style="display:inline;">
+      <div class="pill-view" id="pill-view-{{ e.id }}">
+        <span class="tnum"><strong>{{ e.start_time }} – {{ e.end_time or "active" }}</strong></span>
+        <span class="pill-actions">
+          <button type="button" class="btn btn-sm btn-icon" onclick="toggleEditRow({{ e.id }})" title="Edit interval">✎</button>
+          <form method="post" action="/entries/{{ e.id }}/delete" style="display:inline;" onsubmit="return confirm('Delete this interval?');">
+            <input type="hidden" name="year_month" value="{{ current_ym }}">
+            <input type="hidden" name="redirect_to" value="/#today-editor">
+            <button type="submit" class="btn btn-sm btn-icon btn-red" title="Delete interval">×</button>
+          </form>
+        </span>
+        <span class="badge {% if e.location == 'office' %}badge-pink{% elif e.location == 'remote' %}badge-cyan{% elif e.location == 'dg' %}badge-yellow{% endif %}">{{ e.location }}</span>
+        {% for s in e.sources %}
+        <span class="badge badge-purple">{{ s }}</span>
+        {% endfor %}
+      </div>
+      <form id="edit-entry-{{ e.id }}" method="post" action="/entries/{{ e.id }}/update" class="inline-editor">
         <input type="hidden" name="year_month" value="{{ current_ym }}">
         <input type="hidden" name="redirect_to" value="/#today-editor">
-        <button type="submit" class="btn btn-sm btn-red">×</button>
+        <input type="time" name="start_time" value="{{ e.start_time }}" required>
+        <input type="time" name="end_time" value="{{ e.end_time or '' }}">
+        <select name="location">
+          <option value="remote" {% if e.location == 'remote' %}selected{% endif %}>remote</option>
+          <option value="office" {% if e.location == 'office' %}selected{% endif %}>office</option>
+          <option value="dg" {% if e.location == 'dg' %}selected{% endif %}>dg</option>
+          <option value="-" {% if e.location == '-' %}selected{% endif %}>-</option>
+        </select>
+        <button type="submit" class="btn btn-sm btn-primary">Save</button>
+        <button type="button" class="btn btn-sm" onclick="toggleEditRow({{ e.id }})">Cancel</button>
       </form>
     </div>
-    <form id="edit-entry-{{ e.id }}" method="post" action="/entries/{{ e.id }}/update" style="display:none; gap:6px; flex-wrap:wrap; margin-bottom:8px; align-items:center;">
-      <input type="hidden" name="year_month" value="{{ current_ym }}">
-      <input type="hidden" name="redirect_to" value="/#today-editor">
-      <input type="time" name="start_time" value="{{ e.start_time }}" required>
-      <input type="time" name="end_time" value="{{ e.end_time or '' }}">
-      <select name="location">
-        <option value="remote" {% if e.location == 'remote' %}selected{% endif %}>remote</option>
-        <option value="office" {% if e.location == 'office' %}selected{% endif %}>office</option>
-        <option value="dg" {% if e.location == 'dg' %}selected{% endif %}>dg</option>
-        <option value="-" {% if e.location == '-' %}selected{% endif %}>-</option>
-      </select>
-      <button type="submit" class="btn btn-sm btn-primary">Save</button>
-    </form>
     {% endfor %}
   </div>
   {% else %}

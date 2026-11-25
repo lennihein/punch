@@ -88,7 +88,9 @@
       <p class="muted">Review breaks, Rahmenzeit, overlaps, and suspicious days into a staged proposal before anything changes.</p>
     </div>
     {% if user.has_llm_configured %}
-    <span class="badge badge-green">AI Ready · {{ user.llm_provider }}{% if user.llm_model %} ({{ user.llm_model }}){% endif %}</span>
+    <span class="badge badge-green">AI Ready · {{ user.llm_provider }}{% if user.llm_model %} ({{ user.llm_model }}){% endif %}{% if user.llm_reasoning != 'off' %} · thinking {{ user.llm_reasoning }}{% endif %}</span>
+    {% elif user.has_llm_api_key %}
+    <span class="badge badge-amber">No model selected</span>
     {% else %}
     <span class="badge badge-amber">No AI Key Configured</span>
     {% endif %}
@@ -96,7 +98,7 @@
 
   {% if not user.has_llm_configured %}
   <div class="alert alert-warn btn-row" style="justify-content:space-between;">
-    <span>No AI API key or endpoint is configured for your account. Add a Gemini, OpenAI-compatible, or Anthropic key in Settings to use AI review, or run an Offline Rule Scan.</span>
+    <span>{% if user.has_llm_api_key %}Your key is saved, but no model is selected. Pick one in Settings (use Discover models), or run an Offline Rule Scan.{% else %}No AI API key or endpoint is configured for your account. Add a Gemini, Mistral, OpenAI-compatible, or Anthropic key in Settings to use AI review, or run an Offline Rule Scan.{% endif %}</span>
     <a href="/settings" class="btn btn-sm btn-primary">Configure AI in Settings →</a>
   </div>
   {% endif %}
@@ -108,100 +110,21 @@
     <button type="button" class="prompt-chip" onclick="setAiPrompt('Resolve ATOSS overlaps')">Resolve ATOSS overlaps</button>
   </div>
 
-  <form method="post" action="/months/{{ month.year_month }}/ai-assist" class="btn-row">
+  <form id="ai-assist-form" method="post" action="/months/{{ month.year_month }}/ai-assist" class="btn-row"
+        data-ai-label="{{ user.llm_provider }}{% if user.llm_model %} · {{ user.llm_model }}{% endif %}">
     <input type="text" id="ai-instruction-input" name="instruction" placeholder="Instruction (e.g. 'Fix breaks, 14.09. was sick, flag anything off')" style="flex:1; min-width:240px;">
     <button type="submit" name="mode" value="ai" class="btn btn-primary">Ask AI Assistant</button>
     <button type="submit" name="mode" value="heuristic" class="btn">Offline Rule Scan</button>
   </form>
+
+  <div id="ai-status" class="ai-status" hidden></div>
 </section>
 
 <!-- Pending AI Proposals Drawer -->
-{% if month.pending_proposals %}
-<section id="proposals" class="card proposal-drawer">
-  <div class="card-header">
-    <div>
-      <h2 class="card-title">Pending AI Proposal{% if month.pending_proposals|length > 1 %}s ({{ month.pending_proposals|length }}){% endif %}</h2>
-      <p class="muted">Review proposed edits and suspicious days below. Nothing is applied until you accept.</p>
-    </div>
-  </div>
+<div id="proposals-host">
+  {% include "_proposals.html" %}
+</div>
 
-  {% for prop in month.pending_proposals %}
-  <div class="card" style="background:var(--bg-dark);">
-    <div class="card-header">
-      <div>
-        <span class="badge badge-purple">{{ prop.source_label }}</span>
-        <strong style="margin-left:6px;">{{ prop.summary }}</strong>
-      </div>
-      <form method="post" action="/proposals/{{ prop.id }}/dismiss">
-        <button type="submit" class="btn btn-sm">Dismiss</button>
-      </form>
-    </div>
-
-    {% if prop.suspicious_days %}
-    <div>
-      <div class="muted" style="margin-bottom:6px;">Suspicious Days Checklist</div>
-      <ul class="list-clean">
-        {% for s in prop.suspicious_days %}
-        <li class="issue-item">
-          <div>
-            <a href="#day-{{ s.date }}" class="tnum"><strong>{{ s.date }}</strong></a>:
-            <span>{{ s.reason }}</span>
-            {% if s.suggested_check %}
-            <div class="muted">Check: {{ s.suggested_check }}</div>
-            {% endif %}
-          </div>
-        </li>
-        {% endfor %}
-      </ul>
-    </div>
-    {% endif %}
-
-    {% if prop.changes %}
-    <form method="post" action="/proposals/{{ prop.id }}/apply">
-      <div class="muted" style="margin-bottom:6px;">Proposed Diffs ({{ prop.changes|length }})</div>
-      <div class="list-clean" style="margin-bottom:10px;">
-        {% for ch in prop.changes %}
-        <label class="change-card">
-          <input type="checkbox" name="change_ids" value="{{ ch.id }}" {% if ch.accepted %}checked{% endif %} style="margin-top:4px;">
-          <div style="flex:1;">
-            <div>
-              <span class="badge badge-blue">{{ ch.op_label }}</span>
-              <a href="#day-{{ ch.date }}" class="tnum"><strong>{{ ch.date }}</strong></a>
-              <span>{{ ch.reason }}</span>
-            </div>
-            <div class="diff-grid tnum">
-              {% if ch.before %}
-              <span class="badge badge-red">
-                Before: {% for b in ch.before %}{{ b.start }}-{{ b.end }} ({{ b.location }}){% if not loop.last %}, {% endif %}{% endfor %}
-              </span>
-              {% endif %}
-              {% if ch.after %}
-              <span class="badge badge-green">
-                After:
-                {% if ch.op == 'set_day_code' %}
-                  Code {{ ch.day_code or (ch.after[0].day_code if ch.after is sequence else ch.after.day_code) }}
-                {% else %}
-                  {% for a in ch.after %}{{ a.start }}-{{ a.end }} ({{ a.location }}){% if not loop.last %}, {% endif %}{% endfor %}
-                {% endif %}
-              </span>
-              {% elif ch.day_code %}
-              <span class="badge badge-green">After: Code {{ ch.day_code }}</span>
-              {% endif %}
-            </div>
-          </div>
-        </label>
-        {% endfor %}
-      </div>
-      <div class="btn-row">
-        <button type="submit" class="btn btn-green">Accept Selected</button>
-        <button type="submit" name="accept_all" value="true" class="btn btn-primary">Accept All</button>
-      </div>
-    </form>
-    {% endif %}
-  </div>
-  {% endfor %}
-</section>
-{% endif %}
 
 <!-- Hard Issues & Quick Fixes Summary -->
 {% if month.hard_issues or month.soft_anomalies %}
@@ -260,7 +183,6 @@
 <section class="card">
   <div class="card-header">
     <h2 class="card-title">Daily Intervals & Codes</h2>
-    <span class="muted">Click an interval's Edit button or add missing intervals inline.</span>
   </div>
 
   <table class="month-table">
@@ -269,7 +191,7 @@
         <th style="width:125px;">Datum</th>
         <th style="width:110px;">Sum / Delta</th>
         <th>Arbeitszeiten</th>
-        <th style="width:260px;">Status / Notiz / Fixes</th>
+        <th style="width:230px;">Status</th>
       </tr>
     </thead>
     <tbody>
@@ -296,74 +218,106 @@
         <td>
           {% for e in day.entries %}
           <div class="interval-pill">
-            <span class="tnum"><strong>{{ e.start_time }} – {{ e.end_time or "active" }}</strong></span>
-            <span class="badge {% if e.location == 'office' %}badge-pink{% elif e.location == 'remote' %}badge-cyan{% elif e.location == 'dg' %}badge-yellow{% endif %}">{{ e.location }}</span>
-            {% for s in e.sources %}
-            <span class="badge badge-purple">{{ s }}</span>
-            {% endfor %}
-            <button type="button" class="btn btn-sm" onclick="toggleEditRow({{ e.id }})">Edit</button>
-            <form method="post" action="/entries/{{ e.id }}/delete" style="display:inline;">
+            <div class="pill-view" id="pill-view-{{ e.id }}">
+              <span class="tnum"><strong>{{ e.start_time }} – {{ e.end_time or "active" }}</strong></span>
+              <span class="pill-actions">
+                <button type="button" class="btn btn-sm btn-icon" onclick="toggleEditRow({{ e.id }})" title="Edit interval">✎</button>
+                <form method="post" action="/entries/{{ e.id }}/delete" style="display:inline;" onsubmit="return confirm('Delete this interval?');">
+                  <input type="hidden" name="year_month" value="{{ month.year_month }}">
+                  <button type="submit" class="btn btn-sm btn-icon btn-red" title="Delete interval">×</button>
+                </form>
+              </span>
+              <span class="badge {% if e.location == 'office' %}badge-pink{% elif e.location == 'remote' %}badge-cyan{% elif e.location == 'dg' %}badge-yellow{% endif %}">{{ e.location }}</span>
+              {% for s in e.sources %}
+              <span class="badge badge-purple">{{ s }}</span>
+              {% endfor %}
+            </div>
+            <form id="edit-entry-{{ e.id }}" method="post" action="/entries/{{ e.id }}/update" class="inline-editor">
               <input type="hidden" name="year_month" value="{{ month.year_month }}">
-              <button type="submit" class="btn btn-sm btn-red">×</button>
+              <input type="time" name="start_time" value="{{ e.start_time }}" required>
+              <input type="time" name="end_time" value="{{ e.end_time or '' }}">
+              <select name="location">
+                <option value="remote" {% if e.location == 'remote' %}selected{% endif %}>remote</option>
+                <option value="office" {% if e.location == 'office' %}selected{% endif %}>office</option>
+                <option value="dg" {% if e.location == 'dg' %}selected{% endif %}>dg</option>
+                <option value="-" {% if e.location == '-' %}selected{% endif %}>-</option>
+              </select>
+              <button type="submit" class="btn btn-sm btn-primary">Save</button>
+              <button type="button" class="btn btn-sm" onclick="toggleEditRow({{ e.id }})">Cancel</button>
             </form>
           </div>
-          <form id="edit-entry-{{ e.id }}" method="post" action="/entries/{{ e.id }}/update" style="display:none; gap:6px; flex-wrap:wrap; margin-bottom:6px; align-items:center;">
-            <input type="hidden" name="year_month" value="{{ month.year_month }}">
-            <input type="time" name="start_time" value="{{ e.start_time }}" required>
-            <input type="time" name="end_time" value="{{ e.end_time or '' }}">
-            <select name="location">
-              <option value="remote" {% if e.location == 'remote' %}selected{% endif %}>remote</option>
-              <option value="office" {% if e.location == 'office' %}selected{% endif %}>office</option>
-              <option value="dg" {% if e.location == 'dg' %}selected{% endif %}>dg</option>
-              <option value="-" {% if e.location == '-' %}selected{% endif %}>-</option>
-            </select>
-            <button type="submit" class="btn btn-sm btn-primary">Save</button>
-          </form>
+          {% else %}
+          <span class="muted">—</span>
           {% endfor %}
-
-          <form method="post" action="/months/{{ month.year_month }}/entries" class="btn-row" style="margin-top:4px;">
-            <input type="hidden" name="work_date" value="{{ day.date }}">
-            <input type="time" name="start_time" required style="padding:4px 6px; font-size:0.78rem;">
-            <input type="time" name="end_time" required style="padding:4px 6px; font-size:0.78rem;">
-            <select name="location" style="padding:4px 6px; font-size:0.78rem;">
-              <option value="remote">remote</option>
-              <option value="office">office</option>
-              <option value="dg">dg</option>
-            </select>
-            <button type="submit" class="btn btn-sm">+ Add</button>
-          </form>
+          <button type="button" class="ghost-add" id="day-add-btn-{{ day.date }}" onclick="toggleDayAdd('{{ day.date }}')">+ add interval</button>
+          <div class="inline-editor day-add" id="day-add-{{ day.date }}">
+            <div>
+              <div class="detail-label">Add interval</div>
+              <form method="post" action="/months/{{ month.year_month }}/entries" class="btn-row">
+                <input type="hidden" name="work_date" value="{{ day.date }}">
+                <input type="time" name="start_time" required>
+                <input type="time" name="end_time" required>
+                <select name="location">
+                  <option value="remote">remote</option>
+                  <option value="office">office</option>
+                  <option value="dg">dg</option>
+                </select>
+                <button type="submit" class="btn btn-sm btn-primary">Save</button>
+                <button type="button" class="btn btn-sm" onclick="toggleDayAdd('{{ day.date }}')">Cancel</button>
+              </form>
+            </div>
+            {% for qf in day.quick_fixes %}
+            <form method="post" action="/months/{{ month.year_month }}/quick-fix" class="btn-row">
+              <input type="hidden" name="fix_type" value="{{ qf.fix_type }}">
+              <input type="hidden" name="date_str" value="{{ day.date }}">
+              {% if qf.entry_id %}<input type="hidden" name="entry_id" value="{{ qf.entry_id }}">{% endif %}
+              {% if qf.mode %}<input type="hidden" name="mode" value="{{ qf.mode }}">{% endif %}
+              <button type="submit" class="btn btn-sm btn-primary">{{ qf.label }}</button>
+            </form>
+            {% endfor %}
+          </div>
         </td>
 
         <td>
-          <form method="post" action="/months/{{ month.year_month }}/days/{{ day.date }}" class="btn-row" style="margin-bottom:6px;">
-            <select name="day_code" style="padding:4px 6px; font-size:0.78rem;">
-              <option value="">—</option>
+          <form method="post" action="/months/{{ month.year_month }}/days/{{ day.date }}" style="margin-bottom:6px;">
+            <input type="hidden" name="note" value="{{ day.note or '' }}">
+            <select name="day_code" onchange="this.form.submit()" title="Day code" style="padding:3px 6px; font-size:0.76rem; max-width:100%;">
+              <option value="">— day code —</option>
               {% for c, label in status_map.items() %}
               <option value="{{ c }}" {% if day.day_code == c %}selected{% endif %}>{{ c }} ({{ label }})</option>
               {% endfor %}
             </select>
-            <input type="text" name="note" value="{{ day.note }}" placeholder="Note" style="width:110px; padding:4px 6px; font-size:0.78rem;">
-            <button type="submit" class="btn btn-sm">Set</button>
           </form>
-
-          {% for qf in day.quick_fixes %}
-          <form method="post" action="/months/{{ month.year_month }}/quick-fix" style="margin-bottom:4px;">
-            <input type="hidden" name="fix_type" value="{{ qf.fix_type }}">
-            <input type="hidden" name="date_str" value="{{ day.date }}">
-            {% if qf.entry_id %}<input type="hidden" name="entry_id" value="{{ qf.entry_id }}">{% endif %}
-            {% if qf.mode %}<input type="hidden" name="mode" value="{{ qf.mode }}">{% endif %}
-            <button type="submit" class="btn btn-sm btn-primary">{{ qf.label }}</button>
-          </form>
-          {% endfor %}
-
-          {% for iss in day.hard_issues %}
-          <div class="badge badge-red" style="margin-top:3px;">{{ iss.label }}</div>
-          {% endfor %}
-          {% for anom in day.soft_anomalies %}
-          <div class="badge badge-amber" style="margin-top:3px;">{{ anom.label }}</div>
-          {% endfor %}
+          <div class="btn-row">
+            {% if day.note %}
+            <button type="button" class="note-edit" id="day-meta-btn-{{ day.date }}" onclick="toggleDayMeta('{{ day.date }}')" title="Edit note">
+              <span class="note-snippet">{{ day.note }}</span> ✎
+            </button>
+            {% else %}
+            <button type="button" class="ghost-add" id="day-meta-btn-{{ day.date }}" onclick="toggleDayMeta('{{ day.date }}')">+ note</button>
+            {% endif %}
+            {% for iss in day.hard_issues %}
+            <span class="badge badge-red">{{ iss.label }}</span>
+            {% endfor %}
+            {% for anom in day.soft_anomalies %}
+            <span class="badge badge-amber">{{ anom.label }}</span>
+            {% endfor %}
+            {% if not day.note and not day.hard_issues and not day.soft_anomalies %}
+            <span class="muted">—</span>
+            {% endif %}
+          </div>
+          <div class="inline-editor day-meta" id="day-meta-{{ day.date }}">
+            <div class="detail-label">Note</div>
+            <form method="post" action="/months/{{ month.year_month }}/days/{{ day.date }}" class="btn-row">
+              <input type="hidden" name="day_code" value="{{ day.day_code or '' }}">
+              <input type="text" name="note" value="{{ day.note or '' }}" placeholder="Note" style="flex:1; min-width:140px;">
+              <button type="submit" class="btn btn-sm btn-primary">Save</button>
+              <button type="button" class="btn btn-sm" onclick="toggleDayMeta('{{ day.date }}')">Cancel</button>
+            </form>
+          </div>
         </td>
       </tr>
+
       {% endfor %}
     </tbody>
   </table>

@@ -5,6 +5,7 @@ from datetime import datetime, date as _date
 from pathlib import Path
 from typing import Iterable
 
+from demo_data import build_demo_month, demo_filename, normalize_month
 from parser_atoss import parse_atoss_pdf
 from parser_app import parse_app_pdf
 from table_utils import (
@@ -175,6 +176,35 @@ def run_pdf(args: argparse.Namespace) -> int:
         return 1
 
 
+def run_demo(args: argparse.Namespace) -> int:
+    year_month = normalize_month(args.month)
+    if not year_month:
+        print(f"Invalid --month '{args.month}', expected e.g. 2026-11", file=sys.stderr)
+        return 2
+
+    bundle = build_demo_month(
+        year_month,
+        seed=args.seed,
+        profile=args.profile,
+        through_today=args.until_today,
+    )
+    merged = merge_entries(bundle["entries"], extra_day_codes=bundle["day_codes"])
+    result = validate(merged, extra_day_codes=bundle["day_codes"])
+    report_text = render_reviewed_report(result, day_notes=bundle["day_notes"], day_codes=bundle["day_codes"])
+
+    out_path = args.out if args.out else Path(demo_filename(year_month))
+    out_path.write_text(report_text, encoding="utf-8")
+
+    days = len({e["date"] for e in bundle["entries"]})
+    issues = result.get("issues", []) or []
+    print(f"Wrote synthetic report to {out_path}")
+    print(f"  {len(bundle['entries'])} intervals on {days} days · {len(bundle['day_codes'])} day codes · {len(issues)} issues")
+    for line in summarize_issues(issues) or ["none"]:
+        print(f"  - {line}")
+    print("Import it via Upload in the webapp, or point SEED_REPORT_PATHS at it.")
+    return 0
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="ATOSS/App PDF merge + review reports")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -196,6 +226,14 @@ def main(argv=None) -> int:
     p_pdf.add_argument("reports", type=Path, nargs="+", help="One or more review report text files (e.g. export_may_26.txt)")
     p_pdf.add_argument("-o", "--out", type=Path, help="Output PDF path (defaults to <month>_<yy>.pdf or combined name)")
     p_pdf.set_defaults(func=run_pdf)
+
+    p_demo = sub.add_parser("demo", help="Generate a synthetic month report for demos and AI-assist testing")
+    p_demo.add_argument("--month", required=True, help="Year-month to generate, e.g. 2026-11")
+    p_demo.add_argument("--seed", type=int, default=7, help="Random seed; the same seed reproduces the month")
+    p_demo.add_argument("--profile", choices=["mixed", "clean", "messy"], default="mixed", help="How many rule violations to bake in")
+    p_demo.add_argument("--until-today", action="store_true", help="Stop at today instead of filling the whole month")
+    p_demo.add_argument("-o", "--out", type=Path, help="Output report path (defaults to demo_<month>_<yy>.txt)")
+    p_demo.set_defaults(func=run_demo)
 
     args = parser.parse_args(argv)
     return args.func(args)

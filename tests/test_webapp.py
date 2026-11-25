@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import json
 import os
 import sqlite3
 import subprocess
@@ -303,6 +305,60 @@ def test_agent_api_and_inbuilt_ai_proposal_apply(monkeypatch, tmp_path: Path):
         assert "Krank" in r_view2.text or "Offline Rule Scan" in r_view2.text
 
 
+def test_new_proposal_supersedes_pending_and_groups_suspicious_days(monkeypatch, tmp_path: Path):
+    with _make_client(monkeypatch, tmp_path, seed_sep=True) as client:
+        import re
+
+        web_headers = {"Remote-User": "alice"}
+        r_tok = client.post("/settings/tokens", data={"name": "Supersede", "scope": "agent"}, headers=web_headers)
+        assert r_tok.status_code == 200
+        agent_token = re.search(r"atoss_a_[A-Za-z0-9_-]+", r_tok.text).group(0)
+        agent_headers = {"Authorization": f"Bearer {agent_token}"}
+
+        def post_proposal(summary: str, suspicious_days: list) -> int:
+            r = client.post(
+                "/api/agent/months/2026-09/proposals",
+                headers=agent_headers,
+                json={"summary": summary, "suspicious_days": suspicious_days, "changes": []},
+            )
+            assert r.status_code == 201
+            return r.json()["id"]
+
+        first_id = post_proposal("First review", [])
+        second_id = post_proposal(
+            "Second review",
+            [
+                {"date": "2026-09-01", "reason": "Missing workday", "suggested_check": "Ask employee"},
+                {"date": "2026-09-02", "reason": "Missing workday", "suggested_check": "Ask employee"},
+                {"date": "2026-09-03", "reason": "Missing workday", "suggested_check": "Ask employee"},
+            ],
+        )
+
+        data = client.get("/api/agent/months/2026-09", headers=agent_headers).json()
+        pending = data["pending_proposals"]
+        assert [p["id"] for p in pending] == [second_id]
+        assert pending[0]["suspicious_groups"] == [
+            {
+                "reason": "Missing workday",
+                "suggested_check": "Ask employee",
+                "dates": ["2026-09-01", "2026-09-02", "2026-09-03"],
+                "count": 3,
+                "first_date": "2026-09-01",
+                "date_label": "2026-09-01 – 2026-09-03 (3 days)",
+            }
+        ]
+
+        conn = sqlite3.connect(tmp_path / "test_atoss.db")
+        try:
+            statuses = dict(
+                conn.execute("SELECT id, status FROM proposals WHERE year_month = '2026-09'").fetchall()
+            )
+        finally:
+            conn.close()
+        assert statuses[first_id] == "dismissed"
+        assert statuses[second_id] == "pending"
+
+
 def test_atoss_pdf_upload_and_typst_pdf_export(monkeypatch, tmp_path: Path):
     with _make_client(monkeypatch, tmp_path, seed_sep=False) as client:
         headers = {"Remote-User": "alice"}
@@ -345,6 +401,74 @@ def test_cli_verify_and_pdf_regression(tmp_path: Path):
     )
     assert res_pdf.returncode == 0, res_pdf.stderr
     assert out_pdf.exists() and out_pdf.read_bytes().startswith(b"%PDF-")
+
+
+def test_demo_month_generator_round_trips(tmp_path: Path):
+    from demo_data import build_demo_month, demo_filename, normalize_month
+    from table_utils import parse_report_entries, render_reviewed_report
+    from validation import merge_entries, validate
+
+    assert normalize_month("2026-11") == "2026-11"
+    assert normalize_month("2026-11-01") == "2026-11"
+    assert normalize_month("nonsense") is None
+    assert demo_filename("2026-11") == "demo_november_26.txt"
+
+    bundle = build_demo_month("2026-11", seed=3)
+    assert bundle["entries"], "generator produced no intervals"
+    assert bundle["day_codes"], "generator produced no day codes"
+
+    merged = merge_entries(bundle["entries"], extra_day_codes=bundle["day_codes"])
+    result = validate(merged, extra_day_codes=bundle["day_codes"])
+    assert result["issues"], "mixed profile should contain rule violations"
+
+    report_text = render_reviewed_report(
+        result, day_notes=bundle["day_notes"], day_codes=bundle["day_codes"]
+    )
+    report_path = tmp_path / demo_filename("2026-11")
+    report_path.write_text(report_text, encoding="utf-8")
+
+    parsed = parse_report_entries(report_path)
+    assert len(parsed["entries"]) == len(bundle["entries"])
+    assert parsed["day_codes"] == bundle["day_codes"]
+    assert parsed["day_notes"] == bundle["day_notes"]
+
+    # Same seed reproduces the month, a different seed does not.
+    assert build_demo_month("2026-11", seed=3)["entries"] == bundle["entries"]
+    assert build_demo_month("2026-11", seed=4)["entries"] != bundle["entries"]
+
+
+def test_ai_assist_ajax_returns_rendered_proposal(monkeypatch, tmp_path: Path):
+    with _make_client(monkeypatch, tmp_path, seed_sep=True) as client:
+        headers = {"Remote-User": "alice", "X-Requested-With": "fetch"}
+
+        r_scan = client.post(
+            "/months/2026-09/ai-assist",
+            data={"instruction": "Review September", "mode": "heuristic"},
+            headers=headers,
+        )
+        assert r_scan.status_code == 200
+        payload = r_scan.json()
+        assert payload["ok"] is True
+        assert payload["proposal_id"]
+        assert "Offline Rule Scan" in payload["proposals_html"]
+        assert 'id="proposals"' in payload["proposals_html"]
+        assert payload["changes"] + payload["suspicious_days"] > 0
+
+        # Failure is reported as JSON instead of a redirect, so the UI can show it inline.
+        r_err = client.post("/months/2026-09/ai-assist", data={"mode": "ai"}, headers=headers)
+        assert r_err.status_code == 400
+        assert r_err.json()["ok"] is False
+        assert "No AI API key" in r_err.json()["error"]
+
+        # Without the fetch header the classic redirect flow still works.
+        r_plain = client.post(
+            "/months/2026-09/ai-assist",
+            data={"mode": "heuristic"},
+            headers={"Remote-User": "alice"},
+            follow_redirects=False,
+        )
+        assert r_plain.status_code == 303
+        assert "kind=ok" in r_plain.headers["location"]
 
 
 def test_per_user_llm_settings(monkeypatch, tmp_path: Path):
@@ -403,6 +527,243 @@ def test_per_user_llm_settings(monkeypatch, tmp_path: Path):
         assert r_clr.status_code == 303
         r_settings2 = client.get("/settings", headers=h_alice)
         assert "No AI key saved" in r_settings2.text
+
+
+def test_llm_provider_presets_and_model_discovery(monkeypatch, tmp_path: Path):
+    from app import main as main_module
+    from app.services import LLM_PROVIDERS, extract_model_ids, resolve_llm_config
+
+    # Mistral is a first-class provider with its own fixed endpoint.
+    assert "mistral" in LLM_PROVIDERS
+    cfg = resolve_llm_config({"llm_provider": "mistral", "llm_model": "mistral-large-latest", "llm_api_key": "k"})
+    assert cfg["base_url"] == "https://api.mistral.ai/v1"
+    assert cfg["provider"] == "mistral"
+
+    # No provider has a default model any more.
+    for provider in LLM_PROVIDERS:
+        cfg = resolve_llm_config({"llm_provider": provider, "llm_model": "", "llm_api_key": "k"})
+        assert cfg["model"] == "", provider
+        assert cfg["has_model"] is False
+
+    # The OpenAI-compatible base URL only applies to the openai provider.
+    cfg = resolve_llm_config({"llm_provider": "mistral", "llm_base_url": "http://localhost:11434/v1"})
+    assert cfg["base_url"] == "https://api.mistral.ai/v1"
+
+    assert extract_model_ids("mistral", {
+        "data": [
+            {"id": "mistral-large-latest", "capabilities": {"completion_chat": True}},
+            {"id": "mistral-embed", "capabilities": {"completion_chat": False}},
+            {"id": "open-mistral-nemo", "capabilities": {"completion_chat": True}},
+        ]
+    }) == ["mistral-large-latest", "open-mistral-nemo"]
+    assert extract_model_ids("openai", {
+        "data": [{"id": "gpt-4o"}, {"id": "text-embedding-3-small"}, {"id": "whisper-1"}]
+    }) == ["gpt-4o"]
+    assert extract_model_ids("gemini", {
+        "models": [
+            {"name": "models/gemini-2.5-flash", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/text-embedding-004", "supportedGenerationMethods": ["embedContent"]},
+        ]
+    }) == ["gemini-2.5-flash"]
+
+    async def fake_discover(cfg, timeout_s=20.0):
+        assert cfg["provider"] == "mistral"
+        return ["mistral-large-latest", "mistral-small-latest"]
+
+    monkeypatch.setattr(main_module, "discover_models", fake_discover)
+    with _make_client(monkeypatch, tmp_path, seed_sep=False) as client:
+        headers = {"Remote-User": "alice"}
+        r = client.post(
+            "/settings/llm/models",
+            data={"llm_provider": "mistral", "llm_api_key": "test-key"},
+            headers=headers,
+        )
+        assert r.status_code == 200
+        assert r.json() == {
+            "ok": True,
+            "provider": "mistral",
+            "models": ["mistral-large-latest", "mistral-small-latest"],
+        }
+
+
+def test_ai_assist_requires_a_selected_model(monkeypatch, tmp_path: Path):
+    with _make_client(monkeypatch, tmp_path, seed_sep=True) as client:
+        headers = {"Remote-User": "alice"}
+        r_save = client.post(
+            "/settings/llm",
+            data={"llm_provider": "mistral", "llm_model": "", "llm_base_url": "", "llm_api_key": "test-key"},
+            headers=headers,
+            follow_redirects=False,
+        )
+        assert r_save.status_code == 303
+
+        r_settings = client.get("/settings", headers=headers)
+        assert "Key saved · no model selected" in r_settings.text
+
+        r_ai = client.post(
+            "/months/2026-09/ai-assist",
+            data={"mode": "ai"},
+            headers={**headers, "X-Requested-With": "fetch"},
+        )
+        assert r_ai.status_code == 400
+        assert "No AI model selected" in r_ai.json()["error"]
+
+        r_test = client.post(
+            "/settings/llm",
+            data={"llm_provider": "mistral", "llm_model": "", "llm_base_url": "", "llm_api_key": "", "action_mode": "test"},
+            headers=headers,
+            follow_redirects=False,
+        )
+        assert r_test.status_code == 303
+        assert "No%20AI%20model%20selected" in r_test.headers["location"]
+
+
+def test_reasoning_setting_maps_to_provider_knobs(monkeypatch, tmp_path: Path):
+    from app.services import (
+        normalize_reasoning,
+        reasoning_request_params,
+        resolve_llm_config,
+        should_retry_without_reasoning,
+    )
+
+    assert normalize_reasoning("HIGH") == "high"
+    assert normalize_reasoning("max") == "off"
+    assert normalize_reasoning(None) == "off"
+
+    assert reasoning_request_params("mistral", "off") == {}
+    assert reasoning_request_params("openai", "medium") == {"reasoning_effort": "medium"}
+    anthropic = reasoning_request_params("anthropic", "low")
+    assert anthropic["thinking"] == {"type": "enabled", "budget_tokens": 1024}
+    assert anthropic["max_tokens"] == 1024 + 2048
+    assert reasoning_request_params("gemini", "high") == {"_gemini_thinking_budget": 4096}
+
+    assert should_retry_without_reasoning(400, "reasoning_effort 'medium' is not supported")
+    assert should_retry_without_reasoning(422, '{"detail": [{"loc": ["body", "thinking"]}]}')
+    assert not should_retry_without_reasoning(400, "invalid response_format")
+    assert not should_retry_without_reasoning(500, "reasoning exploded")
+
+    cfg = resolve_llm_config({"llm_provider": "mistral", "llm_model": "m", "llm_reasoning": "high"})
+    assert cfg["reasoning"] == "high"
+
+    with _make_client(monkeypatch, tmp_path, seed_sep=True) as client:
+        headers = {"Remote-User": "alice"}
+        r_save = client.post(
+            "/settings/llm",
+            data={
+                "llm_provider": "mistral",
+                "llm_model": "mistral-large-latest",
+                "llm_base_url": "",
+                "llm_api_key": "test-key",
+                "llm_reasoning": "high",
+            },
+            headers=headers,
+            follow_redirects=False,
+        )
+        assert r_save.status_code == 303
+
+        conn = sqlite3.connect(tmp_path / "test_atoss.db")
+        stored = conn.execute("SELECT llm_reasoning FROM users WHERE username = 'alice'").fetchone()[0]
+        conn.close()
+        assert stored == "high"
+
+        page = client.get("/settings", headers=headers)
+        assert '<option value="high" selected>' in page.text
+        assert 'value="medium"' in page.text
+
+
+def test_ai_assist_reports_reasoning_metadata(monkeypatch, tmp_path: Path):
+    with _make_client(monkeypatch, tmp_path, seed_sep=True) as client:
+        headers = {"Remote-User": "alice", "X-Requested-With": "fetch"}
+        r = client.post(
+            "/months/2026-09/ai-assist",
+            data={"instruction": "Review", "mode": "heuristic"},
+            headers=headers,
+        )
+        assert r.status_code == 200
+        payload = r.json()
+        assert payload["reasoning"] == "off"
+        assert payload["reasoning_tokens"] == 0
+        assert payload["reasoning_note"] == ""
+
+
+def test_ai_review_fixes_all_rule_violations_in_one_proposal(monkeypatch, tmp_path: Path):
+    from app import services as services_module
+    from demo_data import build_demo_month
+
+    with _make_client(monkeypatch, tmp_path, seed_sep=False) as client:
+        client.get("/", headers={"Remote-User": "alice"})
+        db_file = tmp_path / "test_atoss.db"
+        conn = sqlite3.connect(db_file)
+        conn.row_factory = sqlite3.Row
+
+        bundle = build_demo_month("2026-10", seed=7, profile="messy")
+        stamp = "2026-10-31T00:00:00+00:00"
+        for entry in bundle["entries"]:
+            conn.execute(
+                """
+                INSERT INTO entries (user_id, work_date, start_time, end_time, location,
+                                     sources_json, client_event_id, deleted_at, created_at, updated_at)
+                VALUES (1, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)
+                """,
+                (entry["date"], entry["start"], entry["end"], entry["location"],
+                 json.dumps([entry["source"]]), stamp, stamp),
+            )
+        conn.commit()
+
+        user = dict(conn.execute("SELECT * FROM users WHERE id = 1").fetchone())
+        user.update({
+            "llm_provider": "mistral",
+            "llm_model": "test-model",
+            "llm_api_key": "test-key",
+            "llm_reasoning": "off",
+        })
+
+        month_data = services_module.get_month_data(conn, user, "2026-10")
+        rule_changes = services_module._build_heuristic_ai_proposal(month_data, "")[2]
+        unique_rule_keys = {(ch["date"], ch["op"]) for ch in rule_changes}
+        assert len(unique_rule_keys) >= 5
+
+        seen_payloads = []
+
+        async def fake_call(cfg, system_prompt, user_content, timeout_s=90.0):
+            seen_payloads.append(json.loads(user_content))
+            return json.dumps({
+                "summary": "Assistant reviewed the month.",
+                "suspicious_days": [
+                    {"date": "2026-10-21", "reason": "Short day", "suggested_check": "Check calendar"}
+                ],
+                "changes": [
+                    {
+                        "op": "set_day_code",
+                        "date": "2026-10-30",
+                        "day_code": "U",
+                        "reason": "Assistant suggestion",
+                    },
+                    {
+                        "op": next(iter(unique_rule_keys))[1],
+                        "date": next(iter(unique_rule_keys))[0],
+                        "before": [],
+                        "after": [],
+                        "reason": "duplicate of the rule scan",
+                    },
+                ],
+            }), {"reasoning": "off", "reasoning_tokens": 0, "reasoning_note": ""}
+
+        monkeypatch.setattr(services_module, "_call_llm_json", fake_call)
+        proposal = asyncio.run(
+            services_module.generate_inbuilt_ai_proposal(conn, user, "2026-10", instruction="")
+        )
+
+        # One review returns every rule fix plus what the model adds, and no duplicates.
+        assert len(proposal["changes"]) == len(unique_rule_keys) + 1
+        assert [c["source"] for c in proposal["changes"]].count("rule_scan") == len(unique_rule_keys)
+        assert proposal["changes"][-1]["day_code"] == "U"
+        assert len({(c["date"], c["op"]) for c in proposal["changes"]}) == len(proposal["changes"])
+        assert "rule scan" in proposal["summary"]
+
+        # The model is told what the rules already fixed, so it does not repeat them.
+        assert len(seen_payloads[0]["rule_scan_changes"]) == len(rule_changes)
+        conn.close()
 
 
 def test_bundesbeamter_transition_and_13h_max(monkeypatch, tmp_path: Path):

@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS users (
     llm_api_key TEXT,
     llm_model TEXT,
     llm_base_url TEXT,
+    llm_reasoning TEXT NOT NULL DEFAULT 'off',
     balance_anchor_date TEXT,
     balance_anchor_minutes INTEGER,
     verbeamtung_date TEXT,
@@ -252,6 +253,8 @@ def _migrate_db(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE users ADD COLUMN llm_model TEXT")
     if "llm_base_url" not in existing_cols:
         conn.execute("ALTER TABLE users ADD COLUMN llm_base_url TEXT")
+    if "llm_reasoning" not in existing_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN llm_reasoning TEXT NOT NULL DEFAULT 'off'")
     if "balance_anchor_date" not in existing_cols:
         conn.execute("ALTER TABLE users ADD COLUMN balance_anchor_date TEXT")
     if "balance_anchor_minutes" not in existing_cols:

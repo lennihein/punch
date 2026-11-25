@@ -59,34 +59,67 @@
   <div class="card-header">
     <div>
       <h2 class="card-title">AI Assist Configuration (Per-User API Key &amp; Endpoint)</h2>
-      <p class="muted">Configure your personal LLM provider, optional OpenAI-compatible base URL, model, and API key for the Month Editor's AI Assistant.</p>
+      <p class="muted">Pick a provider, choose a model (Discover lists what your key can reach), and paste your API key. No default model is assumed — AI review needs one selected.</p>
     </div>
     {% if user.has_llm_configured %}
     <span class="badge badge-green">AI Configured ({{ user.llm_provider }})</span>
+    {% elif user.has_llm_api_key %}
+    <span class="badge badge-amber">Key saved · no model selected</span>
     {% else %}
     <span class="badge badge-amber">No AI key saved</span>
     {% endif %}
   </div>
 
-  <form method="post" action="/settings/llm" class="list-clean">
+  <form method="post" action="/settings/llm" class="list-clean" id="llm-settings-form">
     <div class="grid-2">
       <div class="list-clean">
         <label class="muted">Provider</label>
-        <select name="llm_provider">
+        <select name="llm_provider" id="llm-provider-select">
           <option value="gemini" {% if user.llm_provider == 'gemini' %}selected{% endif %}>Google Gemini</option>
+          <option value="mistral" {% if user.llm_provider == 'mistral' %}selected{% endif %}>Mistral</option>
           <option value="openai" {% if user.llm_provider == 'openai' %}selected{% endif %}>OpenAI / Compatible</option>
           <option value="anthropic" {% if user.llm_provider == 'anthropic' %}selected{% endif %}>Anthropic Claude</option>
         </select>
       </div>
       <div class="list-clean">
-        <label class="muted">Model (optional override)</label>
-        <input type="text" name="llm_model" value="{{ user.llm_model or '' }}" placeholder="e.g. gemini-2.5-flash, gpt-4o-mini, qwen2.5:14b">
+        <label class="muted">Thinking</label>
+        <select name="llm_reasoning" id="llm-reasoning-select">
+          <option value="off" {% if user.llm_reasoning == 'off' %}selected{% endif %}>Off</option>
+          <option value="low" {% if user.llm_reasoning == 'low' %}selected{% endif %}>Low</option>
+          <option value="medium" {% if user.llm_reasoning == 'medium' %}selected{% endif %}>Medium</option>
+          <option value="high" {% if user.llm_reasoning == 'high' %}selected{% endif %}>High</option>
+        </select>
+        <span class="muted field-hint">Sent as <code>reasoning_effort</code>. Not every model accepts every level; rejected levels fall back to no thinking.</span>
       </div>
+    </div>
+
+    <div class="list-clean">
+      <label class="muted">Model (required — no default is assumed)</label>
+      <div class="model-picker" id="model-picker">
+        <button type="button" class="model-trigger" id="llm-model-trigger"
+                aria-haspopup="listbox" aria-expanded="false"
+                data-empty="{% if not user.llm_model %}true{% else %}false{% endif %}">
+          <span class="model-trigger-label" id="llm-model-trigger-label">{{ user.llm_model or 'Select a model' }}</span>
+          <svg class="model-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+        </button>
+        <div class="model-panel" id="llm-model-panel" hidden>
+          <input type="search" class="model-filter" id="llm-model-filter"
+                 placeholder="Search models, or type an id and press Enter" autocomplete="off">
+          <ul class="model-list" id="llm-model-list" role="listbox" aria-label="Available models"></ul>
+          <div class="model-panel-foot">
+            <span class="muted" id="llm-model-count"></span>
+            <button type="button" class="btn btn-sm" id="llm-model-refresh">Refresh</button>
+          </div>
+        </div>
+      </div>
+      <input type="hidden" name="llm_model" id="llm-model-input" value="{{ user.llm_model or '' }}">
+      <div id="llm-discover-status" class="ai-status" hidden></div>
     </div>
 
     <div class="grid-2">
       <div class="list-clean">
-        <label class="muted">OpenAI-Compatible Endpoint Base URL (optional)</label>
+        <label class="muted">OpenAI-Compatible Endpoint Base URL (only used by the OpenAI / Compatible provider)</label>
         <input type="url" name="llm_base_url" value="{{ user.llm_base_url or '' }}" placeholder="https://api.openai.com/v1 (e.g. OpenRouter, LiteLLM, Ollama)">
       </div>
       <div class="list-clean">
@@ -104,6 +137,201 @@
     </div>
   </form>
 </section>
+
+<script>
+  (function () {
+    const form = document.getElementById('llm-settings-form');
+    if (!form) return;
+
+    const trigger = document.getElementById('llm-model-trigger');
+    const triggerLabel = document.getElementById('llm-model-trigger-label');
+    const panel = document.getElementById('llm-model-panel');
+    const filterInput = document.getElementById('llm-model-filter');
+    const listEl = document.getElementById('llm-model-list');
+    const countEl = document.getElementById('llm-model-count');
+    const hiddenInput = document.getElementById('llm-model-input');
+    const refreshBtn = document.getElementById('llm-model-refresh');
+    const providerSelect = document.getElementById('llm-provider-select');
+    const baseUrlField = form.querySelector('[name="llm_base_url"]').closest('.list-clean');
+    const keyInput = form.querySelector('[name="llm_api_key"]');
+
+    // The base URL only applies to the OpenAI-compatible provider; every other
+    // provider has a fixed endpoint.
+    function syncBaseUrlField() {
+      if (baseUrlField) baseUrlField.style.display = providerSelect.value === 'openai' ? '' : 'none';
+    }
+    providerSelect.addEventListener('change', syncBaseUrlField);
+    syncBaseUrlField();
+
+    let models = [];
+    let loaded = false;
+    let activeIndex = -1;
+    let visible = [];
+
+    function setStatus(kind, text, seconds) {
+      aiSetStatus(kind, text, seconds, 'llm-discover-status');
+    }
+    function clearStatus() {
+      const el = document.getElementById('llm-discover-status');
+      if (el) { el.hidden = true; el.innerHTML = ''; }
+    }
+
+    function currentValue() {
+      return hiddenInput.value.trim();
+    }
+
+    function applySelection(value) {
+      hiddenInput.value = value;
+      triggerLabel.textContent = value || 'Select a model';
+      trigger.dataset.empty = value ? 'false' : 'true';
+      clearStatus();
+      closePanel();
+    }
+
+    function closePanel() {
+      panel.hidden = true;
+      trigger.setAttribute('aria-expanded', 'false');
+      activeIndex = -1;
+    }
+
+    function renderList() {
+      const needle = filterInput.value.trim();
+      const lowered = needle.toLowerCase();
+      listEl.innerHTML = '';
+      visible = models.filter(function (name) { return name.toLowerCase().indexOf(lowered) !== -1; });
+      const exact = models.some(function (name) { return name.toLowerCase() === lowered; });
+
+      if (needle && !exact) {
+        const use = document.createElement('li');
+        use.className = 'model-option model-option-custom';
+        use.setAttribute('role', 'option');
+        use.innerHTML = '<span></span><span class="model-hint">use this id</span>';
+        use.firstChild.textContent = needle;
+        use.addEventListener('click', function () { applySelection(needle); });
+        listEl.appendChild(use);
+        visible = [needle].concat(visible);
+      }
+
+      visible.forEach(function (name) {
+        if (needle && !exact && name === needle) return;
+        const item = document.createElement('li');
+        item.className = 'model-option';
+        item.setAttribute('role', 'option');
+        item.setAttribute('aria-selected', name === currentValue() ? 'true' : 'false');
+        item.textContent = name;
+        item.addEventListener('click', function () { applySelection(name); });
+        listEl.appendChild(item);
+      });
+
+      if (!listEl.children.length) {
+        const empty = document.createElement('li');
+        empty.className = 'model-empty';
+        empty.textContent = loaded ? 'No models match that filter.' : 'Loading models…';
+        listEl.appendChild(empty);
+      }
+      countEl.textContent = loaded ? models.length + ' available' : '';
+      activeIndex = -1;
+    }
+
+    async function loadModels() {
+      trigger.disabled = true;
+      setStatus('busy', 'Listing models…', 0);
+      const started = Date.now();
+      const elapsedEl = document.querySelector('#llm-discover-status .ai-elapsed');
+      const timer = setInterval(function () {
+        if (elapsedEl) elapsedEl.textContent = aiElapsedLabel(Math.round((Date.now() - started) / 1000));
+      }, 500);
+
+      const body = new FormData();
+      body.set('llm_provider', providerSelect.value);
+      body.set('llm_base_url', form.querySelector('[name="llm_base_url"]').value);
+      body.set('llm_api_key', keyInput.value);
+
+      let payload = null;
+      let failure = '';
+      try {
+        const res = await fetch('/settings/llm/models', {
+          method: 'POST',
+          body: body,
+          headers: { 'X-Requested-With': 'fetch' },
+          credentials: 'same-origin',
+        });
+        payload = await res.json().catch(function () { return null; });
+        if (!res.ok || !payload || !payload.ok) {
+          failure = (payload && payload.error) || 'Could not list models.';
+        }
+      } catch (err) {
+        failure = 'Network error: ' + err.message;
+      } finally {
+        clearInterval(timer);
+        trigger.disabled = false;
+      }
+
+      const seconds = Math.round((Date.now() - started) / 1000);
+      if (failure) {
+        loaded = false;
+        setStatus('error', failure, seconds);
+        refreshBtn.disabled = false;
+      } else {
+        models = payload.models || [];
+        loaded = true;
+        clearStatus();
+        countEl.textContent = models.length + ' available';
+      }
+      renderList();
+    }
+
+    async function openPanel() {
+      panel.hidden = false;
+      trigger.setAttribute('aria-expanded', 'true');
+      filterInput.value = '';
+      renderList();
+      filterInput.focus();
+      if (!loaded) await loadModels();
+    }
+
+    trigger.addEventListener('click', function () {
+      if (panel.hidden) openPanel(); else closePanel();
+    });
+
+    filterInput.addEventListener('input', renderList);
+
+    filterInput.addEventListener('keydown', function (event) {
+      const options = Array.prototype.slice.call(listEl.querySelectorAll('.model-option'));
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        if (!options.length) return;
+        activeIndex = event.key === 'ArrowDown'
+          ? Math.min(activeIndex + 1, options.length - 1)
+          : Math.max(activeIndex - 1, 0);
+        options.forEach(function (opt, index) { opt.classList.toggle('is-active', index === activeIndex); });
+        options[activeIndex].scrollIntoView({ block: 'nearest' });
+      } else if (event.key === 'Enter') {
+        event.preventDefault();
+        if (activeIndex >= 0 && options[activeIndex]) {
+          options[activeIndex].click();
+        } else if (filterInput.value.trim()) {
+          applySelection(filterInput.value.trim());
+        }
+      } else if (event.key === 'Escape') {
+        closePanel();
+      }
+    });
+
+    refreshBtn.addEventListener('click', function () {
+      loaded = false;
+      loadModels();
+    });
+
+    document.addEventListener('click', function (event) {
+      if (!panel.hidden && !document.getElementById('model-picker').contains(event.target)) closePanel();
+    });
+
+    document.addEventListener('keydown', function (event) {
+      if (event.key === 'Escape' && !panel.hidden) closePanel();
+    });
+  })();
+</script>
 
 <!-- API Tokens (Watch & External Agent) -->
 <section class="card">

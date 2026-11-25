@@ -1,0 +1,83 @@
+{% if month.pending_proposals %}
+<section id="proposals" class="card proposal-drawer">
+  <div class="card-header">
+    <div>
+      <h2 class="card-title">Pending AI Proposal</h2>
+      <p class="muted">Review proposed edits and suspicious days below. Nothing is applied until you accept.</p>
+    </div>
+  </div>
+
+  {% for prop in month.pending_proposals %}
+  <div class="proposal">
+    <div class="card-header">
+      <span class="badge badge-purple">{{ prop.source_label }}</span>
+      <form method="post" action="/proposals/{{ prop.id }}/dismiss">
+        <button type="submit" class="btn btn-sm">Dismiss</button>
+      </form>
+    </div>
+
+    <p class="proposal-summary">{{ prop.summary }}</p>
+
+    {% if prop.suspicious_groups %}
+    <div class="proposal-section">
+      <div class="detail-label">Suspicious days · {{ prop.suspicious_days|length }}</div>
+      <ul class="suspect-list">
+        {% for g in prop.suspicious_groups %}
+        <li class="suspect-item">
+          <a href="#day-{{ g.first_date }}" class="suspect-dates tnum">{{ g.date_label }}</a>
+          <span class="suspect-reason">{{ g.reason }}</span>
+          {% if g.suggested_check %}
+          <span class="suspect-check">Check: {{ g.suggested_check }}</span>
+          {% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+
+    {% if prop.changes %}
+    <form method="post" action="/proposals/{{ prop.id }}/apply">
+      <div class="detail-label">Proposed edits · {{ prop.changes|length }}</div>
+      <div class="list-clean" style="margin-bottom:10px;">
+        {% for ch in prop.changes %}
+        <label class="change-card">
+          <input type="checkbox" name="change_ids" value="{{ ch.id }}" {% if ch.accepted %}checked{% endif %} style="margin-top:4px;">
+          <div style="flex:1;">
+            <div>
+              <span class="badge badge-blue">{{ ch.op_label }}{% if ch.source == 'rule_scan' %} · rule{% endif %}</span>
+              <a href="#day-{{ ch.date }}" class="tnum"><strong>{{ ch.date }}</strong></a>
+              <span>{{ ch.reason }}</span>
+            </div>
+            <div class="diff-grid tnum">
+              {% if ch.before %}
+              <span class="badge badge-red">
+                Before: {% for b in ch.before %}{{ b.start }}-{{ b.end }} ({{ b.location }}){% if not loop.last %}, {% endif %}{% endfor %}
+              </span>
+              {% endif %}
+              {% if ch.after %}
+              <span class="badge badge-green">
+                After:
+                {% if ch.op == 'set_day_code' %}
+                  Code {{ ch.day_code or (ch.after[0].day_code if ch.after is sequence else ch.after.day_code) }}
+                {% else %}
+                  {% for a in ch.after %}{{ a.start }}-{{ a.end }} ({{ a.location }}){% if not loop.last %}, {% endif %}{% endfor %}
+                {% endif %}
+              </span>
+              {% elif ch.day_code %}
+              <span class="badge badge-green">After: Code {{ ch.day_code }}</span>
+              {% endif %}
+            </div>
+          </div>
+        </label>
+        {% endfor %}
+      </div>
+      <div class="btn-row">
+        <button type="submit" class="btn btn-green">Accept Selected</button>
+        <button type="submit" name="accept_all" value="true" class="btn btn-primary">Accept all {{ prop.changes|length }}</button>
+      </div>
+    </form>
+    {% endif %}
+  </div>
+  {% endfor %}
+</section>
+{% endif %}

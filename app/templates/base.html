@@ -21,7 +21,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,100..900&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/style.css?v=dark12">
+  <link rel="stylesheet" href="/static/style.css?v=dark29">
 </head>
 <body>
   <header class="topbar">
@@ -132,8 +132,22 @@
         try {
           sessionStorage.setItem('atoss_scroll_y', String(window.scrollY));
           sessionStorage.setItem('atoss_scroll_path', window.location.pathname);
+          sessionStorage.setItem('punch_submitted', '1');
         } catch (_) {}
       });
+
+      // After a genuine anchor navigation (issue/proposal links) re-open the day
+      // panel. After a form submit the redirect also carries #day-..., but there
+      // the panel and edit forms should stay closed.
+      try {
+        const submitted = sessionStorage.getItem('punch_submitted');
+        sessionStorage.removeItem('punch_submitted');
+        sessionStorage.removeItem('punch_edit_entry');
+        if (!submitted) {
+          const m = (window.location.hash || '').match(/^#day-(\d{4}-\d{2}-\d{2})$/);
+          if (m) openDayAdd(m[1]);
+        }
+      } catch (_) {}
 
       function applyTheme(theme) {
         document.documentElement.dataset.theme = theme;
@@ -161,9 +175,60 @@
       }
     })();
 
+    function openEditRow(id) {
+      const form = document.getElementById('edit-entry-' + id);
+      const view = document.getElementById('pill-view-' + id);
+      if (form) form.classList.add('open');
+      if (view) view.style.display = 'none';
+    }
+
+    function closeEditRow(id) {
+      const form = document.getElementById('edit-entry-' + id);
+      const view = document.getElementById('pill-view-' + id);
+      if (form) form.classList.remove('open');
+      if (view) view.style.display = 'flex';
+    }
+
     function toggleEditRow(id) {
-      const el = document.getElementById('edit-entry-' + id);
-      if (el) el.style.display = el.style.display === 'none' ? 'flex' : 'none';
+      const form = document.getElementById('edit-entry-' + id);
+      if (!form) return;
+      if (form.classList.contains('open')) closeEditRow(id); else openEditRow(id);
+    }
+
+    function openDayAdd(date) {
+      const el = document.getElementById('day-add-' + date);
+      if (el) el.classList.add('open');
+      const btn = document.getElementById('day-add-btn-' + date);
+      if (btn) btn.textContent = 'close';
+    }
+
+    function closeDayAdd(date) {
+      const el = document.getElementById('day-add-' + date);
+      if (el) el.classList.remove('open');
+      const btn = document.getElementById('day-add-btn-' + date);
+      if (btn) btn.textContent = '+ add interval';
+    }
+
+    function toggleDayAdd(date) {
+      const el = document.getElementById('day-add-' + date);
+      if (!el) return;
+      if (el.classList.contains('open')) closeDayAdd(date); else openDayAdd(date);
+    }
+
+    function openDayMeta(date) {
+      const el = document.getElementById('day-meta-' + date);
+      if (el) el.classList.add('open');
+    }
+
+    function closeDayMeta(date) {
+      const el = document.getElementById('day-meta-' + date);
+      if (el) el.classList.remove('open');
+    }
+
+    function toggleDayMeta(date) {
+      const el = document.getElementById('day-meta-' + date);
+      if (!el) return;
+      if (el.classList.contains('open')) closeDayMeta(date); else openDayMeta(date);
     }
 
     function setAiPrompt(text) {
@@ -173,6 +238,88 @@
         input.focus();
       }
     }
+
+    function aiElapsedLabel(seconds) {
+      const m = Math.floor(seconds / 60);
+      const s = seconds % 60;
+      return m > 0 ? m + ':' + String(s).padStart(2, '0') : s + 's';
+    }
+
+    function aiSetStatus(kind, text, seconds, statusId) {
+      const statusEl = document.getElementById(statusId || 'ai-status');
+      if (!statusEl) return;
+      statusEl.hidden = false;
+      statusEl.className = 'ai-status is-' + kind;
+      statusEl.innerHTML = (kind === 'busy' ? '<span class="ai-spinner" aria-hidden="true"></span>' : '') +
+        '<span class="ai-status-text"></span>' +
+        '<span class="ai-elapsed tnum"></span>';
+      statusEl.querySelector('.ai-status-text').textContent = text;
+      statusEl.querySelector('.ai-elapsed').textContent = aiElapsedLabel(seconds);
+    }
+
+    async function runAiAssist(form, submitter) {
+      const buttons = form.querySelectorAll('button');
+      const host = document.getElementById('proposals-host');
+      const mode = submitter && submitter.value ? submitter.value : 'ai';
+      const label = form.dataset.aiLabel || 'the AI provider';
+      const started = Date.now();
+      const body = new FormData(form);
+      body.set('mode', mode);
+
+      buttons.forEach(function (b) { b.disabled = true; });
+      aiSetStatus('busy', (mode === 'heuristic' ? 'Running the offline rule scan' : 'Waiting for ' + label) + '…', 0);
+      const elapsedEl = document.querySelector('#ai-status .ai-elapsed');
+      const timer = setInterval(function () {
+        if (elapsedEl) elapsedEl.textContent = aiElapsedLabel(Math.round((Date.now() - started) / 1000));
+      }, 500);
+
+      let payload = null;
+      let failure = '';
+      try {
+        const res = await fetch(form.action, {
+          method: 'POST',
+          body: body,
+          headers: { 'X-Requested-With': 'fetch' },
+          credentials: 'same-origin',
+        });
+        payload = await res.json().catch(function () { return null; });
+        if (!res.ok || !payload || !payload.ok) {
+          failure = (payload && payload.error) ||
+            (payload ? 'Request failed with status ' + res.status : 'Unexpected response from the server — reload the page and try again.');
+        }
+      } catch (err) {
+        failure = 'Network error: ' + err.message;
+      } finally {
+        clearInterval(timer);
+        buttons.forEach(function (b) { b.disabled = false; });
+      }
+
+      const seconds = Math.round((Date.now() - started) / 1000);
+      if (failure) {
+        aiSetStatus('error', failure, seconds);
+        return;
+      }
+
+      if (host) host.innerHTML = payload.proposals_html || '';
+      const parts = [];
+      if (payload.changes) parts.push(payload.changes + (payload.changes === 1 ? ' edit' : ' edits'));
+      if (payload.suspicious_days) {
+        parts.push(payload.suspicious_days + (payload.suspicious_days === 1 ? ' day flagged' : ' days flagged'));
+      }
+      if (payload.reasoning_tokens) parts.push(payload.reasoning_tokens + ' thinking tokens');
+      const note = payload.reasoning_note ? ' · ' + payload.reasoning_note : '';
+      aiSetStatus('ok', 'Proposal ready' + (parts.length ? ' · ' + parts.join(' · ') : '') + note, seconds);
+      const proposals = document.getElementById('proposals');
+      if (proposals) proposals.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    document.addEventListener('submit', function (e) {
+      const form = e.target;
+      if (!(form instanceof HTMLFormElement)) return;
+      if (!form.action || !form.action.includes('/ai-assist')) return;
+      e.preventDefault();
+      runAiAssist(form, e.submitter);
+    });
   </script>
 </body>
 </html>

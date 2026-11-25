@@ -660,6 +660,42 @@ def detect_soft_anomalies(
     return sorted(anomalies, key=lambda x: (x["date"], x["type"]))
 
 
+def _date_span_label(dates: List[str]) -> str:
+    if not dates:
+        return ""
+    if len(dates) == 1:
+        return dates[0]
+    return f"{dates[0]} – {dates[-1]} ({len(dates)} days)"
+
+
+def group_suspicious_days(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Collapse suspicious days sharing a reason into one row with a date span."""
+    buckets: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        reason = str(item.get("reason") or "").strip()
+        check = str(item.get("suggested_check") or "").strip()
+        day = str(item.get("date") or "").strip()
+        bucket = buckets.setdefault((reason, check), {"reason": reason, "suggested_check": check, "dates": []})
+        if day:
+            bucket["dates"].append(day)
+
+    groups: List[Dict[str, Any]] = []
+    for bucket in buckets.values():
+        dates = sorted(bucket["dates"])
+        groups.append({
+            "reason": bucket["reason"],
+            "suggested_check": bucket["suggested_check"],
+            "dates": dates,
+            "count": len(dates),
+            "first_date": dates[0] if dates else "",
+            "date_label": _date_span_label(dates),
+        })
+    groups.sort(key=lambda g: (g["first_date"], g["reason"]))
+    return groups
+
+
 def get_month_data(db: sqlite3.Connection, user: Dict[str, Any], year_month: str) -> Dict[str, Any]:
     year_month = normalize_ym(year_month)
     year, month = map(int, year_month.split("-"))
@@ -908,12 +944,14 @@ def get_month_data(db: sqlite3.Connection, user: Dict[str, Any], year_month: str
         SELECT * FROM proposals
         WHERE user_id = ? AND year_month = ? AND status = 'pending'
         ORDER BY id DESC
+        LIMIT 1
         """,
         (user["id"], year_month),
     ).fetchall()
     pending_proposals = []
     for p in proposal_rows:
         raw_changes = json.loads(p["changes_json"])
+        raw_suspicious = json.loads(p["suspicious_days_json"])
         enriched_changes = []
         for ch in raw_changes:
             c_item = dict(ch)
@@ -927,7 +965,8 @@ def get_month_data(db: sqlite3.Connection, user: Dict[str, Any], year_month: str
             "source_label": "External Agent" if p["source"] == "external_agent" else "AI Assistant",
             "status": p["status"],
             "summary": p["summary"],
-            "suspicious_days": json.loads(p["suspicious_days_json"]),
+            "suspicious_days": raw_suspicious,
+            "suspicious_groups": group_suspicious_days(raw_suspicious),
             "changes": enriched_changes,
             "created_at": p["created_at"],
         })
@@ -1482,6 +1521,15 @@ def create_proposal(
                 "suggested_check": "",
             })
     now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    # A month has at most one proposal awaiting review: a newer run supersedes older pending ones.
+    db.execute(
+        """
+        UPDATE proposals
+        SET status = 'dismissed', resolved_at = ?
+        WHERE user_id = ? AND year_month = ? AND status = 'pending'
+        """,
+        (now, user_id, ym),
+    )
     cur = db.execute(
         """
         INSERT INTO proposals (
@@ -1761,25 +1809,64 @@ def _build_heuristic_ai_proposal(
     return summary, suspicious_days, changes
 
 
+LLM_PROVIDERS: Dict[str, Dict[str, str]] = {
+    "gemini": {"label": "Google Gemini", "base_url": "https://generativelanguage.googleapis.com/v1beta"},
+    "openai": {"label": "OpenAI / Compatible", "base_url": "https://api.openai.com/v1"},
+    "anthropic": {"label": "Anthropic Claude", "base_url": "https://api.anthropic.com/v1"},
+    "mistral": {"label": "Mistral", "base_url": "https://api.mistral.ai/v1"},
+}
+
+REASONING_LEVELS: Tuple[str, ...] = ("off", "low", "medium", "high")
+REASONING_BUDGETS: Dict[str, int] = {"low": 1024, "medium": 2048, "high": 4096}
+
+
+def normalize_reasoning(value: Any) -> str:
+    level = str(value or "").strip().lower()
+    return level if level in REASONING_LEVELS else "off"
+
+
+def reasoning_request_params(provider: str, level: str) -> Dict[str, Any]:
+    """Translate an effort level into the provider's thinking knob."""
+    clean = normalize_reasoning(level)
+    if clean == "off":
+        return {}
+    budget = REASONING_BUDGETS[clean]
+    if provider in ("openai", "mistral"):
+        return {"reasoning_effort": clean}
+    if provider == "anthropic":
+        return {"thinking": {"type": "enabled", "budget_tokens": budget}, "max_tokens": budget + 2048}
+    return {"_gemini_thinking_budget": budget}
+
+
+def should_retry_without_reasoning(status_code: int, body: str) -> bool:
+    """Providers reject the thinking knob for models that cannot reason."""
+    if status_code not in (400, 422):
+        return False
+    lowered = (body or "").lower()
+    return "reasoning" in lowered or "thinking" in lowered
+
+
 def resolve_llm_config(user: Dict[str, Any]) -> Dict[str, Any]:
     provider = (user.get("llm_provider") or os.environ.get("LLM_PROVIDER") or "gemini").strip().lower()
-    if provider not in ("gemini", "openai", "anthropic"):
+    if provider not in LLM_PROVIDERS:
         provider = "gemini"
     api_key = (user.get("llm_api_key") or os.environ.get("LLM_API_KEY") or "").strip()
-    raw_model = (user.get("llm_model") or os.environ.get("LLM_MODEL") or "").strip()
+    model = (user.get("llm_model") or os.environ.get("LLM_MODEL") or "").strip()
+    env_base_url = (user.get("llm_base_url") or os.environ.get("LLM_BASE_URL") or "").strip().rstrip("/")
+    # Ollama, LiteLLM, OpenRouter and friends are reached through the openai provider;
+    # everything else uses its own fixed endpoint.
     if provider == "openai":
-        model = raw_model or "gpt-4o-mini"
-    elif provider == "anthropic":
-        model = raw_model or "claude-3-5-haiku-latest"
+        base_url = env_base_url or LLM_PROVIDERS["openai"]["base_url"]
     else:
-        model = raw_model or "gemini-2.5-flash"
-    base_url = (user.get("llm_base_url") or os.environ.get("LLM_BASE_URL") or "https://api.openai.com/v1").strip().rstrip("/")
+        base_url = LLM_PROVIDERS[provider]["base_url"]
     return {
         "provider": provider,
         "api_key": api_key,
         "model": model,
         "base_url": base_url,
+        "reasoning": normalize_reasoning(user.get("llm_reasoning") or os.environ.get("LLM_REASONING")),
         "has_key": bool(api_key),
+        "has_model": bool(model),
     }
 
 
@@ -1859,65 +1946,198 @@ def _parse_llm_json_dict(raw_text: Any, provider: str, model: str) -> Dict[str, 
     return parsed
 
 
+LLM_MODEL_BLOCKLIST = ("embed", "moderation", "whisper", "tts", "dall-e", "audio", "realtime", "transcribe")
+
+
+def extract_model_ids(provider: str, payload: Any) -> List[str]:
+    """Pull usable chat model ids out of a provider's model list payload."""
+    ids: List[str] = []
+    if provider == "gemini":
+        for item in (payload or {}).get("models", []) if isinstance(payload, dict) else []:
+            methods = item.get("supportedGenerationMethods") or []
+            name = str(item.get("name") or "").replace("models/", "")
+            if not name:
+                continue
+            if methods and "generateContent" not in methods:
+                continue
+            ids.append(name)
+    else:
+        for item in (payload or {}).get("data", []) if isinstance(payload, dict) else []:
+            model_id = str(item.get("id") or "")
+            if not model_id:
+                continue
+            capabilities = item.get("capabilities") or {}
+            if capabilities and capabilities.get("completion_chat") is False:
+                continue
+            if any(token in model_id.lower() for token in LLM_MODEL_BLOCKLIST):
+                continue
+            ids.append(model_id)
+    seen: List[str] = []
+    for model_id in ids:
+        if model_id not in seen:
+            seen.append(model_id)
+    return sorted(seen)
+
+
+async def discover_models(cfg: Dict[str, Any], timeout_s: float = 20.0) -> List[str]:
+    provider = cfg["provider"]
+    api_key = cfg["api_key"]
+    if not api_key:
+        raise AIConnectionError("No API key saved yet — enter one to list the available models.")
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout_s) as client:
+            if provider in ("openai", "mistral"):
+                resp = await client.get(
+                    f"{cfg['base_url'].rstrip('/')}/models",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                )
+            elif provider == "anthropic":
+                resp = await client.get(
+                    f"{cfg['base_url']}/models",
+                    headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"},
+                )
+            else:
+                resp = await client.get(
+                    f"{cfg['base_url']}/models",
+                    params={"key": api_key},
+                )
+            resp.raise_for_status()
+            return extract_model_ids(provider, resp.json())
+    except httpx.HTTPStatusError as exc:
+        body_snippet = (exc.response.text or "")[:160].replace("\n", " ").strip()
+        raise AIConnectionError(
+            f"Could not list models ({provider}): HTTP {exc.response.status_code} {body_snippet}"
+        ) from exc
+    except httpx.RequestError as exc:
+        raise AIConnectionError(f"Could not list models ({provider}): {exc}") from exc
+    except Exception as exc:
+        raise AIConnectionError(f"Could not list models ({provider}): {exc}") from exc
+
+
+def _strip_reasoning(body: Dict[str, Any], provider: str) -> Dict[str, Any]:
+    cleaned = dict(body)
+    if provider in ("openai", "mistral"):
+        cleaned.pop("reasoning_effort", None)
+    elif provider == "anthropic":
+        cleaned.pop("thinking", None)
+        cleaned["max_tokens"] = 2048
+    else:
+        generation = dict(cleaned.get("generationConfig") or {})
+        generation.pop("thinkingConfig", None)
+        cleaned["generationConfig"] = generation
+    return cleaned
+
+
+def _llm_request_body(
+    provider: str,
+    cfg: Dict[str, Any],
+    system_prompt: str,
+    user_content: str,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Build the provider payload plus the reasoning metadata for this call."""
+    reasoning = normalize_reasoning(cfg.get("reasoning"))
+    thinking = reasoning_request_params(provider, reasoning)
+    meta: Dict[str, Any] = {"reasoning": reasoning, "reasoning_tokens": 0, "reasoning_note": ""}
+
+    if provider in ("openai", "mistral"):
+        body: Dict[str, Any] = {
+            "model": cfg["model"],
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ],
+        }
+        body.update(thinking)
+    elif provider == "anthropic":
+        body = {
+            "model": cfg["model"],
+            "max_tokens": thinking.get("max_tokens", 2048),
+            "system": system_prompt,
+            "messages": [{"role": "user", "content": user_content}],
+        }
+        if "thinking" in thinking:
+            body["thinking"] = thinking["thinking"]
+    else:
+        generation: Dict[str, Any] = {"responseMimeType": "application/json"}
+        if "_gemini_thinking_budget" in thinking:
+            generation["thinkingConfig"] = {"thinkingBudget": thinking["_gemini_thinking_budget"]}
+        body = {
+            "systemInstruction": {"parts": [{"text": system_prompt}]},
+            "contents": [{"parts": [{"text": user_content}]}],
+            "generationConfig": generation,
+        }
+    return body, meta
+
+
+async def _post_llm(
+    client: httpx.AsyncClient,
+    provider: str,
+    cfg: Dict[str, Any],
+    body: Dict[str, Any],
+) -> httpx.Response:
+    api_key = cfg["api_key"]
+    if provider in ("openai", "mistral"):
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        return await client.post(_openai_chat_url(cfg["base_url"]), headers=headers, json=body)
+    if provider == "anthropic":
+        headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01"}
+        return await client.post(f"{cfg['base_url']}/messages", headers=headers, json=body)
+    return await client.post(
+        f"{cfg['base_url']}/models/{cfg['model']}:generateContent",
+        params={"key": api_key},
+        json=body,
+    )
+
+
 async def _call_llm_json(
     cfg: Dict[str, Any],
     system_prompt: str,
     user_content: str,
     timeout_s: float = 45.0,
-) -> str:
+) -> Tuple[str, Dict[str, Any]]:
+    """Call the provider and return the raw text plus reasoning metadata."""
     provider = cfg["provider"]
-    api_key = cfg["api_key"]
     model = cfg["model"]
-    base_url = cfg["base_url"]
+    body, meta = _llm_request_body(provider, cfg, system_prompt, user_content)
+    has_response_format = "response_format" in body
 
     try:
         async with httpx.AsyncClient(timeout=timeout_s) as client:
-            if provider == "openai":
-                chat_url = _openai_chat_url(base_url)
-                headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-                body: Dict[str, Any] = {
-                    "model": model,
-                    "response_format": {"type": "json_object"},
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_content},
-                    ],
-                }
-                resp = await client.post(chat_url, headers=headers, json=body)
-                if resp.status_code == 400 and "response_format" in resp.text:
-                    body.pop("response_format", None)
-                    resp = await client.post(chat_url, headers=headers, json=body)
-                resp.raise_for_status()
-                return _coerce_llm_text(resp.json()["choices"][0]["message"].get("content"))
+            resp = await _post_llm(client, provider, cfg, body)
 
-            if provider == "anthropic":
-                resp = await client.post(
-                    "https://api.anthropic.com/v1/messages",
-                    headers={
-                        "x-api-key": api_key,
-                        "anthropic-version": "2023-06-01",
-                    },
-                    json={
-                        "model": model,
-                        "max_tokens": 2048,
-                        "system": system_prompt,
-                        "messages": [{"role": "user", "content": user_content}],
-                    },
+            # Older/other OpenAI-compatible servers do not know response_format.
+            if resp.status_code == 400 and has_response_format and "response_format" in resp.text:
+                body.pop("response_format", None)
+                resp = await _post_llm(client, provider, cfg, body)
+
+            # Models without reasoning support reject the thinking knob outright.
+            if should_retry_without_reasoning(resp.status_code, resp.text) and (
+                meta["reasoning"] != "off"
+            ):
+                meta["reasoning_note"] = (
+                    f"{model} does not accept reasoning_effort={meta['reasoning']} — retried without thinking"
                 )
-                resp.raise_for_status()
-                return _coerce_llm_text(resp.json().get("content"))
+                body = _strip_reasoning(body, provider)
+                resp = await _post_llm(client, provider, cfg, body)
 
-            resp = await client.post(
-                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-                params={"key": api_key},
-                json={
-                    "systemInstruction": {"parts": [{"text": system_prompt}]},
-                    "contents": [{"parts": [{"text": user_content}]}],
-                    "generationConfig": {"responseMimeType": "application/json"},
-                },
-            )
             resp.raise_for_status()
-            return _coerce_llm_text(resp.json()["candidates"][0]["content"].get("parts"))
+            payload = resp.json()
+
+        usage = payload.get("usage") or payload.get("usageMetadata") or {}
+        details = usage.get("completion_tokens_details") or {}
+        meta["reasoning_tokens"] = int(
+            details.get("reasoning_tokens") or usage.get("thoughtsTokenCount") or 0
+        )
+
+        if provider in ("openai", "mistral"):
+            text = _coerce_llm_text(payload["choices"][0]["message"].get("content"))
+        elif provider == "anthropic":
+            text = _coerce_llm_text(payload.get("content"))
+        else:
+            text = _coerce_llm_text(payload["candidates"][0]["content"].get("parts"))
+        return text, meta
     except httpx.HTTPStatusError as exc:
         body_snippet = (exc.response.text or "")[:200].replace("\n", " ").strip()
         raise AIConnectionError(
@@ -1927,18 +2147,28 @@ async def _call_llm_json(
         raise AIConnectionError(
             f"AI connection failed ({provider} · {model}): {exc}"
         ) from exc
+    except AIConnectionError:
+        raise
     except Exception as exc:
         raise AIConnectionError(
             f"AI response error ({provider} · {model}): {exc}"
         ) from exc
 
 
+MISSING_MODEL_MESSAGE = (
+    "No AI model selected. Open Settings → AI Assist Configuration, pick a provider, "
+    "then use 'Discover models' to choose one."
+)
+
+
 async def test_llm_connection(user: Dict[str, Any]) -> Tuple[bool, str]:
     cfg = resolve_llm_config(user)
     if not cfg["has_key"] and not (cfg["provider"] == "openai" and user.get("llm_base_url")):
         return False, "No API key configured. Enter an API key (or a local OpenAI-compatible Base URL) to test."
+    if not cfg["has_model"]:
+        return False, MISSING_MODEL_MESSAGE
     try:
-        raw = await _call_llm_json(
+        raw, meta = await _call_llm_json(
             cfg,
             system_prompt='Return ONLY valid JSON: {"ok": true}',
             user_content='Reply with {"ok": true}',
@@ -1946,9 +2176,66 @@ async def test_llm_connection(user: Dict[str, Any]) -> Tuple[bool, str]:
         )
         if not raw.strip():
             return False, f"AI connection failed ({cfg['provider']} · {cfg['model']}): Empty response"
-        return True, f"Connected successfully to {cfg['provider']} ({cfg['model']})"
+        detail = f"Connected successfully to {cfg['provider']} ({cfg['model']})"
+        if meta["reasoning_tokens"]:
+            detail += f" · thinking {meta['reasoning_tokens']} tokens"
+        if meta["reasoning_note"]:
+            detail += f" · {meta['reasoning_note']}"
+        return True, detail
     except AIConnectionError as exc:
         return False, str(exc)
+
+
+def _change_key(change: Dict[str, Any]) -> Tuple[str, str]:
+    return (str(change.get("date") or "").strip(), str(change.get("op") or "").strip())
+
+
+def merge_proposal_changes(
+    rule_changes: List[Dict[str, Any]],
+    ai_changes: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """One change per date+op, rule-scan fixes first, model suggestions on top.
+
+    The deterministic scan knows every hard rule violation, so it decides the
+    baseline; the model may only add corrections the rules do not cover.
+    """
+    merged: List[Dict[str, Any]] = []
+    seen: set[Tuple[str, str]] = set()
+    for source, changes in (("rule_scan", rule_changes), ("ai", ai_changes)):
+        for change in changes or []:
+            if not isinstance(change, dict):
+                continue
+            item = dict(change)
+            item["source"] = source
+            key = _change_key(item)
+            if not key[0] or key in seen:
+                continue
+            seen.add(key)
+            merged.append(item)
+    return merged
+
+
+def merge_suspicious_days(
+    rule_days: List[Dict[str, Any]],
+    ai_days: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Deduplicate flagged days by date, keeping the rule-scan wording first."""
+    merged: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for source, days in (("rule_scan", rule_days), ("ai", ai_days)):
+        for day in days or []:
+            if isinstance(day, str):
+                day = {"date": day, "reason": "Flagged for review", "suggested_check": ""}
+            if not isinstance(day, dict):
+                continue
+            d_iso = str(day.get("date") or "").strip()
+            if not d_iso or d_iso in seen:
+                continue
+            item = dict(day)
+            item["source"] = source
+            seen.add(d_iso)
+            merged.append(item)
+    return merged
 
 
 async def generate_inbuilt_ai_proposal(
@@ -1979,6 +2266,12 @@ async def generate_inbuilt_ai_proposal(
             "No AI API key configured. Please add your API key in Settings → AI Assist Configuration "
             "(or click 'Offline Rule Scan' to run deterministic checks without AI)."
         )
+    if not cfg["has_model"]:
+        raise AIConnectionError(MISSING_MODEL_MESSAGE)
+
+    # Rule scan first: it enumerates every hard violation deterministically, so a
+    # single review covers all of them and the model can only add what rules miss.
+    _, rule_suspicious, rule_changes = _build_heuristic_ai_proposal(month_data, instruction)
 
     compact_days = [
         {
@@ -2001,6 +2294,10 @@ async def generate_inbuilt_ai_proposal(
     prompt_payload = {
         "year_month": year_month,
         "instruction": instruction or "Review this month, propose fixes for hard rule violations (6h30->30m break, 9h45->45m break, 06:00-20:00 Fri 18:00), and list suspicious days.",
+        "rule_scan_changes": [
+            {"date": ch.get("date"), "op": ch.get("op"), "reason": ch.get("reason")}
+            for ch in rule_changes
+        ],
         "empty_workdays": month_data["empty_workdays"],
         "days": compact_days,
         "required_output_schema": {
@@ -2020,21 +2317,38 @@ async def generate_inbuilt_ai_proposal(
     }
     system_prompt = (
         "You are an ATOSS time-tracking review assistant. Return ONLY valid JSON matching required_output_schema. "
+        "The rule scan already lists a fix for every hard violation in rule_scan_changes; do not repeat those "
+        "date+op pairs. Add corrections for problems the rules cannot see, and flag days that need real data. "
         "Never invent worked hours without explanation; preserve worked duration when splitting breaks."
     )
 
-    raw_text = await _call_llm_json(cfg, system_prompt, json.dumps(prompt_payload), timeout_s=90.0)
+    raw_text, reasoning_meta = await _call_llm_json(cfg, system_prompt, json.dumps(prompt_payload), timeout_s=90.0)
     parsed = _parse_llm_json_dict(raw_text, cfg["provider"], cfg["model"])
 
-    return create_proposal(
+    changes = merge_proposal_changes(rule_changes, list(parsed.get("changes") or []))
+    suspicious_days = merge_suspicious_days(rule_suspicious, list(parsed.get("suspicious_days") or []))
+    rule_count = sum(1 for ch in changes if ch.get("source") == "rule_scan")
+    ai_count = len(changes) - rule_count
+    ai_summary = str(parsed.get("summary") or "AI review proposal").strip()
+    coverage = (
+        f"{len(changes)} edit(s) · {rule_count} from rule scan · {ai_count} from the assistant "
+        f"· {len(suspicious_days)} day(s) flagged"
+    )
+    summary = f"{ai_summary} — {coverage}" if changes or suspicious_days else ai_summary
+
+    proposal = create_proposal(
         db,
         user_id=user["id"],
         year_month=year_month,
         source="inbuilt_ai",
-        summary=str(parsed.get("summary") or "AI review proposal"),
-        suspicious_days=list(parsed.get("suspicious_days") or []),
-        changes=list(parsed.get("changes") or []),
+        summary=summary,
+        suspicious_days=suspicious_days,
+        changes=changes,
     )
+    proposal["reasoning"] = reasoning_meta["reasoning"]
+    proposal["reasoning_tokens"] = reasoning_meta["reasoning_tokens"]
+    proposal["reasoning_note"] = reasoning_meta["reasoning_note"]
+    return proposal
 
 
 def export_months_pdf(db: sqlite3.Connection, user: Dict[str, Any], year_months: List[str], out_dir: Path) -> Path:
