@@ -29,6 +29,8 @@ data class PairResult(
 
 class ApiAuthException(message: String) : IOException(message)
 
+class HttpPunchException(val code: Int, message: String) : IOException(message)
+
 object AtossApiClient {
 
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
@@ -128,6 +130,9 @@ object AtossApiClient {
                 throw ApiAuthException("Token rejected (401)")
             }
             if (!resp.isSuccessful) {
+                if (resp.code in 400..499) {
+                    throw HttpPunchException(resp.code, "Punch rejected: HTTP ${resp.code}")
+                }
                 throw IOException("Punch failed: HTTP ${resp.code}")
             }
             WatchStatus.fromJsonString(bodyStr)
@@ -142,17 +147,25 @@ object AtossApiClient {
 
         var latest: WatchStatus? = null
         for (p in pending) {
-            val res = punch(
-                serverUrl = store.serverUrl,
-                token = token,
-                action = p.action,
-                location = p.location,
-                clientTs = p.clientTs,
-                eventId = p.eventId
-            )
-            store.removePendingPunch(p.eventId)
-            store.saveCachedStatus(res)
-            latest = res
+            try {
+                val res = punch(
+                    serverUrl = store.serverUrl,
+                    token = token,
+                    action = p.action,
+                    location = p.location,
+                    clientTs = p.clientTs,
+                    eventId = p.eventId
+                )
+                store.removePendingPunch(p.eventId)
+                store.saveCachedStatus(res)
+                latest = res
+            } catch (_: HttpPunchException) {
+                // Permanent rejection: the server did not apply this event and the
+                // event_id dedup makes a later retry safe, so drop it and continue.
+                store.removePendingPunch(p.eventId)
+            }
+            // ApiAuthException / IOException (5xx, network): abort the loop and keep
+            // the remaining punches queued, preserving tap order.
         }
         latest
     }
@@ -182,7 +195,14 @@ object AtossApiClient {
             )
             store.saveCachedStatus(fresh)
             fresh
+        } catch (e: HttpPunchException) {
+            // Permanently rejected by the server; queueing it would only poison the flush.
+            throw e
         } catch (e: ApiAuthException) {
+            // Not applied server-side: keep the punch queued so it lands after re-pairing.
+            store.enqueuePendingPunch(PendingPunch(action, location, nowTs, eventId))
+            store.applyOptimisticPunch(action, location, localDate, localHm)
+            PunchTileService.enqueueOfflineSync(context)
             throw e
         } catch (_: IOException) {
             store.enqueuePendingPunch(PendingPunch(action, location, nowTs, eventId))

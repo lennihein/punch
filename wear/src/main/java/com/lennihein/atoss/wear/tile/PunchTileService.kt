@@ -50,6 +50,8 @@ import java.util.UUID
 
 private const val RESOURCES_VERSION = "7"
 
+private const val QUEUE_STUCK_MINUTES = 5L
+
 private const val CLICK_PUNCH_IN_REMOTE = "punch_in_remote"
 private const val CLICK_PUNCH_IN_OFFICE = "punch_in_office"
 private const val CLICK_PUNCH_OUT = "punch_out"
@@ -106,7 +108,15 @@ class PunchTileService : TileService() {
             }
         }
 
-        val queuedCount = store.getPendingPunches().size
+        val pendingPunches = store.getPendingPunches()
+        val queuedCount = pendingPunches.size
+        val queueStuck = pendingPunches.any { p ->
+            try {
+                Duration.between(OffsetDateTime.parse(p.clientTs), OffsetDateTime.now()).toMinutes() >= QUEUE_STUCK_MINUTES
+            } catch (_: Exception) {
+                false
+            }
+        }
         if (!token.isNullOrBlank() && !handledClick) {
             val ageMs = System.currentTimeMillis() - store.getCachedStatusTimestampMs()
             if (queuedCount > 0) {
@@ -134,7 +144,7 @@ class PunchTileService : TileService() {
                     val elapsedMins = Duration.between(startDt, slotStart).toMinutes().toInt().coerceAtLeast(0)
                     val startMs = slotStart.atZone(zone).toInstant().toEpochMilli()
                     val endMs = slotEnd.atZone(zone).toInstant().toEpochMilli()
-                    val slotLayout = buildTileLayout(token, cached, queuedCount, elapsedMins)
+                    val slotLayout = buildTileLayout(token, cached, queuedCount, elapsedMins, queueStuck)
                     timelineBuilder.addTimelineEntry(
                         TimelineBuilders.TimelineEntry.Builder()
                             .setValidity(
@@ -152,7 +162,7 @@ class PunchTileService : TileService() {
                     )
                 }
                 val fallbackElapsed = Duration.between(startDt, nowLocal).toMinutes().toInt().coerceAtLeast(0)
-                val fallbackLayout = buildTileLayout(token, cached, queuedCount, fallbackElapsed)
+                val fallbackLayout = buildTileLayout(token, cached, queuedCount, fallbackElapsed, queueStuck)
                 timelineBuilder.addTimelineEntry(
                     TimelineBuilders.TimelineEntry.Builder()
                         .setLayout(
@@ -163,7 +173,7 @@ class PunchTileService : TileService() {
                         .build()
                 )
             } else {
-                val layout = buildTileLayout(token, cached, queuedCount, 0)
+                val layout = buildTileLayout(token, cached, queuedCount, 0, queueStuck)
                 timelineBuilder.addTimelineEntry(
                     TimelineBuilders.TimelineEntry.Builder()
                         .setLayout(
@@ -175,7 +185,7 @@ class PunchTileService : TileService() {
                 )
             }
         } else {
-            val layout = buildTileLayout(token, cached, queuedCount, 0)
+            val layout = buildTileLayout(token, cached, queuedCount, 0, queueStuck)
             timelineBuilder.addTimelineEntry(
                 TimelineBuilders.TimelineEntry.Builder()
                     .setLayout(
@@ -210,7 +220,8 @@ class PunchTileService : TileService() {
         token: String?,
         cached: WatchStatus?,
         queuedCount: Int,
-        activeElapsedMins: Int = 0
+        activeElapsedMins: Int = 0,
+        queueStuck: Boolean = false
     ): LayoutElementBuilders.LayoutElement {
         val openMainClickable = Clickable.Builder()
             .setId("open_app")
@@ -273,12 +284,10 @@ class PunchTileService : TileService() {
         val isClockedIn = cached?.clockedIn == true
         val activeEntry = cached?.activeEntry
         val currentLoc = activeEntry?.location ?: cached?.lastLocation ?: "remote"
-        val syncSuffix = if (queuedCount > 0) " · ${queuedCount}q" else ""
-
         val statusText = if (isClockedIn) {
-            "● ${currentLoc.uppercase()}$syncSuffix"
+            "● ${currentLoc.uppercase()}"
         } else {
-            "○ OFF DUTY$syncSuffix"
+            "○ OFF DUTY"
         }
         val statusColor = if (isClockedIn) 0xFF34D399.toInt() else 0xFF94A3B8.toInt()
 
@@ -380,6 +389,55 @@ class PunchTileService : TileService() {
             .setWidth(wrap())
             .setVerticalAlignment(LayoutElementBuilders.VERTICAL_ALIGN_CENTER)
             .addContent(statusPill)
+
+        if (queuedCount > 0) {
+            val white = 0xFFFFFFFF.toInt()
+            val dotModifiers = ModifiersBuilders.Modifiers.Builder()
+                .setBackground(
+                    ModifiersBuilders.Background.Builder()
+                        .setColor(argb(if (queueStuck) 0x00000000 else white))
+                        .setCorner(
+                            ModifiersBuilders.Corner.Builder()
+                                .setRadius(dp(5f))
+                                .build()
+                        )
+                        .build()
+                )
+                .setClickable(openMainClickable)
+            if (queueStuck) {
+                dotModifiers.setBorder(
+                    ModifiersBuilders.Border.Builder()
+                        .setColor(argb(white))
+                        .setWidth(dp(1.5f))
+                        .build()
+                )
+            }
+            statusRowBuilder.addContent(
+                LayoutElementBuilders.Spacer.Builder().setWidth(dp(5f)).build()
+            )
+            statusRowBuilder.addContent(
+                LayoutElementBuilders.Box.Builder()
+                    .setWidth(dp(9f))
+                    .setHeight(dp(9f))
+                    .setModifiers(dotModifiers.build())
+                    .build()
+            )
+            statusRowBuilder.addContent(
+                LayoutElementBuilders.Spacer.Builder().setWidth(dp(3f)).build()
+            )
+            statusRowBuilder.addContent(
+                LayoutElementBuilders.Box.Builder()
+                    .setWidth(wrap())
+                    .setHeight(wrap())
+                    .setModifiers(
+                        ModifiersBuilders.Modifiers.Builder()
+                            .setClickable(openMainClickable)
+                            .build()
+                    )
+                    .addContent(styledText(queuedCount.toString(), 11f, white, bold = true))
+                    .build()
+            )
+        }
 
         if (hasWarnings) {
             statusRowBuilder.addContent(
