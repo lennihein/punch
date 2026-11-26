@@ -38,6 +38,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material.icons.filled.SyncProblem
 import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
 import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
 import androidx.wear.compose.material.Button
@@ -48,6 +51,7 @@ import androidx.wear.compose.material.CircularProgressIndicator
 import androidx.wear.compose.material.Colors
 import androidx.wear.compose.material.CompactButton
 import androidx.wear.compose.material.CompactChip
+import androidx.wear.compose.material.Icon
 import androidx.wear.compose.material.MaterialTheme
 import androidx.wear.compose.material.PositionIndicator
 import androidx.wear.compose.material.Scaffold
@@ -64,6 +68,7 @@ import java.time.Duration
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.LocalTime
+import java.time.OffsetDateTime
 
 private val SlateBg = Color(0xFF0B0F17)
 private val SlateSurface = Color(0xFF1E293B)
@@ -75,6 +80,8 @@ private val TealAccent = Color(0xFF14B8A6)
 private val EmeraldBright = Color(0xFF34D399)
 private val IndigoAccent = Color(0xFF4F46E5)
 private val RoseAction = Color(0xFFE11D48)
+
+private const val QUEUE_STUCK_MINUTES = 5L
 private val AmberWarn = Color(0xFF92400E)
 
 private val WatchColors = Colors(
@@ -386,7 +393,6 @@ private fun PunchScreen(
         ) {
             // 1. Status Badge Pill (+ warning dot matching Widget)
             item {
-                val queueSuffix = if (pendingCount > 0) " · ${pendingCount}q" else ""
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.Center
@@ -404,9 +410,9 @@ private fun PunchScreen(
                     ) {
                         Text(
                             text = if (isClockedIn) {
-                                "● ${activeLoc.uppercase()}$queueSuffix"
+                                "● ${activeLoc.uppercase()}"
                             } else {
-                                "○ OFF DUTY$queueSuffix"
+                                "○ OFF DUTY"
                             },
                             fontSize = 11.sp,
                             fontWeight = FontWeight.SemiBold,
@@ -425,6 +431,33 @@ private fun PunchScreen(
                                         listState.animateScrollToItem(3)
                                     }
                                 }
+                        )
+                    }
+                    if (pendingCount > 0) {
+                        val queueStuck = store.getPendingPunches().any { p ->
+                            try {
+                                Duration.between(OffsetDateTime.parse(p.clientTs), OffsetDateTime.now()).toMinutes() >= QUEUE_STUCK_MINUTES
+                            } catch (_: Exception) {
+                                false
+                            }
+                        }
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Icon(
+                            imageVector = if (queueStuck) Icons.Default.SyncProblem else Icons.Default.Sync,
+                            contentDescription = if (queueStuck) {
+                                "$pendingCount punches not syncing"
+                            } else {
+                                "$pendingCount punches queued for sync"
+                            },
+                            tint = Color.White,
+                            modifier = Modifier.size(12.dp)
+                        )
+                        Spacer(modifier = Modifier.width(2.dp))
+                        Text(
+                            text = "$pendingCount",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color.White
                         )
                     }
                 }
