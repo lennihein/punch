@@ -145,11 +145,19 @@ def test_watch_pairing_and_idempotent_punch(monkeypatch, tmp_path: Path):
         assert r_stat.status_code == 200
         assert r_stat.json()["clocked_in"] is False
 
+        # Punches are stamped today: parse_client_ts only trusts client timestamps
+        # within +-7 days of now, so a fixed date would age out of that window.
+        from datetime import datetime, time
+        from zoneinfo import ZoneInfo
+
+        tz = ZoneInfo("Europe/Berlin")
+        today = datetime.now(tz).date()
+
         # Idempotent punch-in (same event_id sent twice -> 1 row)
         payload_in = {
             "action": "in",
             "location": "remote",
-            "client_ts": "2026-11-17T08:30:00+01:00",
+            "client_ts": datetime.combine(today, time(8, 30), tzinfo=tz).isoformat(),
             "event_id": "evt-in-001",
         }
         p1 = client.post("/api/watch/punch", json=payload_in, headers=auth_hdr)
@@ -162,7 +170,7 @@ def test_watch_pairing_and_idempotent_punch(monkeypatch, tmp_path: Path):
         payload_out = {
             "action": "toggle",
             "location": "remote",
-            "client_ts": "2026-11-17T12:15:00+01:00",
+            "client_ts": datetime.combine(today, time(12, 15), tzinfo=tz).isoformat(),
             "event_id": "evt-out-002",
         }
         po1 = client.post("/api/watch/punch", json=payload_out, headers=auth_hdr)
