@@ -15,6 +15,7 @@
         ps.python-multipart
         ps.pdfminer-six
         ps.httpx
+        ps.httpx2
         ps.pytest
       ]);
 
