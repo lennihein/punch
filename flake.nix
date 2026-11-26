@@ -46,7 +46,7 @@
         in
         pkgs.stdenvNoCC.mkDerivation {
           pname = "punch-web";
-          version = "0.3.0";
+          version = "0.3.1";
           inherit src;
 
           nativeBuildInputs = [ pkgs.makeWrapper ];

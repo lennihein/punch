@@ -93,6 +93,51 @@ def test_seeding_and_authelia_multi_identity(monkeypatch, tmp_path: Path):
         assert sep_cnt == 6
 
 
+def test_pwa_installability_assets(monkeypatch, tmp_path: Path):
+    import re
+
+    with _make_client(monkeypatch, tmp_path, seed_sep=False) as client:
+        # Manifest must satisfy Chrome's installability checks: the canonical
+        # manifest media type, standalone display, start_url, and 192px + 512px
+        # PNG icons that are actually fetchable.
+        r = client.get("/manifest.json")
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("application/manifest+json")
+        m = r.json()
+        assert m["display"] == "standalone"
+        assert m["start_url"] == "/"
+        assert m.get("scope") == "/"
+        sizes = {i["sizes"] for i in m["icons"]}
+        assert "192x192" in sizes
+        assert "512x512" in sizes
+        for icon in m["icons"]:
+            ri = client.get(icon["src"])
+            assert ri.status_code == 200, icon["src"]
+
+        # Manifest theme/background colors must match the light theme used by
+        # the page (base.html meta theme-color / style.css --bg).
+        assert m["theme_color"] == "#f2f0eb"
+        assert m["background_color"] == "#f2f0eb"
+
+        # A service worker with a fetch handler must be served from root scope.
+        sw = client.get("/sw.js")
+        assert sw.status_code == 200
+        assert "javascript" in sw.headers["content-type"]
+        assert sw.headers.get("Service-Worker-Allowed") == "/"
+        assert "addEventListener('fetch'" in sw.text
+
+        # Pages must register the service worker, link the manifest with
+        # credentials (the site sits behind Authelia cookie auth), and carry a
+        # theme-color meta consistent with the manifest.
+        page = client.get("/", headers={"Remote-User": "alice"})
+        assert page.status_code == 200
+        assert "navigator.serviceWorker.register('/sw.js')" in page.text
+        assert '<link rel="manifest" href="/manifest.json" crossorigin="use-credentials">' in page.text
+        meta = re.search(r'<meta name="theme-color" content="([^"]+)"', page.text)
+        assert meta is not None
+        assert meta.group(1) == m["theme_color"]
+
+
 def test_web_punch_flow_and_location_switch(monkeypatch, tmp_path: Path):
     with _make_client(monkeypatch, tmp_path, seed_sep=False) as client:
         headers = {"Remote-User": "alice"}

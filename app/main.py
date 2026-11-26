@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import tempfile
@@ -10,7 +11,7 @@ from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import JSONResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
@@ -178,41 +179,60 @@ def health_check() -> Dict[str, str]:
 
 
 @app.get("/manifest.json")
-def pwa_manifest() -> JSONResponse:
-    return JSONResponse({
-        "name": "Punch!",
-        "short_name": "Punch!",
-        "start_url": "/",
-        "display": "standalone",
-        "background_color": "#fff6e5",
-        "theme_color": "#f6f7f9",
-        "icons": [
-            {
-                "src": "/static/punch_icon.svg",
-                "sizes": "any",
-                "type": "image/svg+xml",
-                "purpose": "any",
-            },
-            {
-                "src": "/static/icon-192.png",
-                "sizes": "192x192",
-                "type": "image/png",
-                "purpose": "any",
-            },
-            {
-                "src": "/static/icon-512.png",
-                "sizes": "512x512",
-                "type": "image/png",
-                "purpose": "any",
-            },
-            {
-                "src": "/static/icon-maskable-512.png",
-                "sizes": "512x512",
-                "type": "image/png",
-                "purpose": "maskable",
-            },
-        ],
-    })
+def pwa_manifest() -> Response:
+    # Served with the canonical manifest media type (application/json also
+    # parses, but application/manifest+json is what the spec registers) and
+    # with theme/background colors matching the light theme in base.html
+    # / style.css (--bg: #f2f0eb).
+    return Response(
+        content=json.dumps({
+            "name": "Punch!",
+            "short_name": "Punch!",
+            "id": "/",
+            "scope": "/",
+            "start_url": "/",
+            "display": "standalone",
+            "background_color": "#f2f0eb",
+            "theme_color": "#f2f0eb",
+            "icons": [
+                {
+                    "src": "/static/punch_icon.svg",
+                    "sizes": "any",
+                    "type": "image/svg+xml",
+                    "purpose": "any",
+                },
+                {
+                    "src": "/static/icon-192.png",
+                    "sizes": "192x192",
+                    "type": "image/png",
+                    "purpose": "any",
+                },
+                {
+                    "src": "/static/icon-512.png",
+                    "sizes": "512x512",
+                    "type": "image/png",
+                    "purpose": "any",
+                },
+                {
+                    "src": "/static/icon-maskable-512.png",
+                    "sizes": "512x512",
+                    "type": "image/png",
+                    "purpose": "maskable",
+                },
+            ],
+        }),
+        media_type="application/manifest+json",
+    )
+
+
+@app.get("/sw.js")
+def service_worker() -> FileResponse:
+    # Served from root scope so it covers start_url "/". The cache middleware
+    # already sends no-cache for non-/static/ paths, which is what we want
+    # for the SW script so updates are picked up.
+    response = FileResponse(APP_DIR / "static" / "sw.js", media_type="application/javascript")
+    response.headers["Service-Worker-Allowed"] = "/"
+    return response
 
 
 def _safe_redirect_url(redirect_to: Optional[str], fallback: str) -> str:
