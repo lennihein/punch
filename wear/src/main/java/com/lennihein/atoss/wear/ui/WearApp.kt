@@ -105,12 +105,10 @@ private val WatchColors = Colors(
 @Composable
 fun WearApp(store: TokenStore) {
     MaterialTheme(colors = WatchColors) {
-        var token by remember { mutableStateOf<String?>(null) }
-        var loaded by remember { mutableStateOf(false) }
-        LaunchedEffect(Unit) {
-            token = withContext(Dispatchers.IO) { store.token }
-            loaded = true
-        }
+        // Plain-prefs flag only: the Keystore-backed token is read lazily on IO when
+        // a network call needs it, so the first frame never waits on the Keystore.
+        var token by remember { mutableStateOf<String?>(if (store.isPaired) "paired" else null) }
+        val loaded = true
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -248,7 +246,7 @@ private fun PairingScreen(
                             try {
                                 store.serverUrl = serverUrl
                                 val res = AtossApiClient.pair(serverUrl, code)
-                                store.token = res.token
+                                withContext(Dispatchers.IO) { store.token = res.token }
                                 store.userName = res.displayName
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 TileService.getUpdater(context).requestUpdate(PunchTileService::class.java)
@@ -337,7 +335,12 @@ private fun PunchScreen(
     suspend fun refreshStatus() {
         try {
             AtossApiClient.flushPendingPunches(store)
-            val fresh = AtossApiClient.getStatus(store.serverUrl, token)
+            val realToken = withContext(Dispatchers.IO) { store.token }
+            if (realToken.isNullOrBlank()) {
+                onUnpaired()
+                return
+            }
+            val fresh = AtossApiClient.getStatus(store.serverUrl, realToken)
             status = fresh
             store.saveCachedStatus(fresh)
             readQueueState()
@@ -428,7 +431,7 @@ private fun PunchScreen(
                     horizontalArrangement = Arrangement.Center
                 ) {
                     Box(
-                        modifier = Modifier.width(18.dp),
+                        modifier = Modifier.width(20.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         if (pendingCount > 0) {
@@ -442,7 +445,7 @@ private fun PunchScreen(
                                     "Punches queued for sync"
                                 },
                                 tint = Color.Unspecified,
-                                modifier = Modifier.size(11.dp)
+                                modifier = Modifier.size(12.dp)
                             )
                         }
                     }
@@ -469,15 +472,16 @@ private fun PunchScreen(
                         )
                     }
                     Box(
-                        modifier = Modifier.width(18.dp),
+                        modifier = Modifier.width(20.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         if (warnings.isNotEmpty()) {
-                            Box(
+                            Icon(
+                                painter = painterResource(R.drawable.ic_warn_dot),
+                                contentDescription = "Warnings",
+                                tint = Color.Unspecified,
                                 modifier = Modifier
-                                    .size(10.dp)
-                                    .clip(CircleShape)
-                                    .background(Color(0xFFF59E0B))
+                                    .size(12.dp)
                                     .clickable {
                                         scope.launch {
                                             listState.animateScrollToItem(3)

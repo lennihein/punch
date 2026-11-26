@@ -25,9 +25,7 @@ class TileActionActivity : ComponentActivity() {
         val action = intent.getStringExtra(EXTRA_ACTION) ?: "toggle"
         val location = intent.getStringExtra(EXTRA_LOCATION) ?: "remote"
         val store = TokenStore(applicationContext)
-        val token = store.token
-
-        if (token.isNullOrBlank()) {
+        if (!store.isPaired) {
             Toast.makeText(this, "Pair watch first", Toast.LENGTH_SHORT).show()
             finish()
             return

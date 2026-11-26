@@ -91,9 +91,16 @@ data class WatchStatus(
     }
 }
 
-class TokenStore(context: Context) {
+class TokenStore(private val context: Context) {
 
-    private val prefs: SharedPreferences = run {
+    // Only the pairing token is secret. Reading EncryptedSharedPreferences (Keystore +
+    // AES-SIV key decryption) is slow on a watch, so everything else lives in plain
+    // prefs and the token is cached in memory after the first read. This keeps tile
+    // taps and screen composition off the slow path.
+    private val state: SharedPreferences =
+        context.getSharedPreferences("atoss_wear_state", Context.MODE_PRIVATE)
+
+    private val secure: SharedPreferences by lazy {
         val masterKey = MasterKey.Builder(context)
             .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
             .build()
@@ -106,50 +113,81 @@ class TokenStore(context: Context) {
         )
     }
 
+    @Volatile private var tokenLoaded = false
+    @Volatile private var tokenCache: String? = null
+
+    /** Plain-prefs pairing flag (set once the token has been loaded or saved); main-thread safe. */
+    val isPaired: Boolean
+        get() = state.getBoolean(KEY_PAIRED, false)
+
+    /** Loads the secure store; call from a background thread to warm up. */
+    fun warmUp() {
+        token
+    }
+
     var serverUrl: String
-        get() = prefs.getString(KEY_SERVER_URL, DEFAULT_SERVER_URL) ?: DEFAULT_SERVER_URL
+        get() = state.getString(KEY_SERVER_URL, null)
+            ?: runCatching { secure.getString(KEY_SERVER_URL, null) }.getOrNull()
+            ?: DEFAULT_SERVER_URL
         set(value) {
-            prefs.edit().putString(KEY_SERVER_URL, value.trim().trimEnd('/')).apply()
+            state.edit().putString(KEY_SERVER_URL, value.trim().trimEnd('/')).apply()
         }
 
     var token: String?
-        get() = prefs.getString(KEY_TOKEN, null)
+        get() {
+            if (!tokenLoaded) {
+                synchronized(this) {
+                    if (!tokenLoaded) {
+                        tokenCache = secure.getString(KEY_TOKEN, null)
+                        tokenLoaded = true
+                        val edit = state.edit().putBoolean(KEY_PAIRED, !tokenCache.isNullOrBlank())
+                        if (!state.contains(KEY_SERVER_URL)) {
+                            secure.getString(KEY_SERVER_URL, null)?.let { edit.putString(KEY_SERVER_URL, it) }
+                        }
+                        edit.apply()
+                    }
+                }
+            }
+            return tokenCache
+        }
         set(value) {
-            prefs.edit().putString(KEY_TOKEN, value).apply()
+            tokenCache = value
+            tokenLoaded = true
+            state.edit().putBoolean(KEY_PAIRED, !value.isNullOrBlank()).apply()
+            secure.edit().putString(KEY_TOKEN, value).apply()
         }
 
     var userName: String?
-        get() = prefs.getString(KEY_USER_NAME, null)
+        get() = state.getString(KEY_USER_NAME, null)
         set(value) {
-            prefs.edit().putString(KEY_USER_NAME, value).apply()
+            state.edit().putString(KEY_USER_NAME, value).apply()
         }
 
     var lastLocation: String
-        get() = prefs.getString(KEY_LAST_LOCATION, "remote") ?: "remote"
+        get() = state.getString(KEY_LAST_LOCATION, "remote") ?: "remote"
         set(value) {
-            prefs.edit().putString(KEY_LAST_LOCATION, value).apply()
+            state.edit().putString(KEY_LAST_LOCATION, value).apply()
         }
-
     fun saveCachedStatus(status: WatchStatus) {
         lastLocation = status.lastLocation
-        prefs.edit()
+        state.edit()
             .putString(KEY_CACHED_STATUS, status.toJsonString())
             .putLong(KEY_CACHED_TS, System.currentTimeMillis())
             .apply()
     }
 
     fun getCachedStatus(): WatchStatus? {
-        val raw = prefs.getString(KEY_CACHED_STATUS, null) ?: return null
+        val raw = state.getString(KEY_CACHED_STATUS, null) ?: return null
         return WatchStatus.fromJsonString(raw)
     }
 
     fun getCachedStatusTimestampMs(): Long {
-        return prefs.getLong(KEY_CACHED_TS, 0L)
+        return state.getLong(KEY_CACHED_TS, 0L)
     }
 
     @Synchronized
     fun getPendingPunches(): List<PendingPunch> {
-        val raw = prefs.getString(KEY_PENDING_PUNCHES, null) ?: return emptyList()
+        val raw = state.getString(KEY_PENDING_PUNCHES, null) ?: return emptyList()
         return try {
             val arr = JSONArray(raw)
             buildList {
@@ -196,7 +234,7 @@ class TokenStore(context: Context) {
                     .put("event_id", p.eventId)
             )
         }
-        prefs.edit().putString(KEY_PENDING_PUNCHES, arr.toString()).apply()
+        state.edit().putString(KEY_PENDING_PUNCHES, arr.toString()).apply()
     }
 
     fun applyOptimisticPunch(
@@ -287,8 +325,11 @@ class TokenStore(context: Context) {
     }
 
     fun clearAuth() {
-        prefs.edit()
-            .remove(KEY_TOKEN)
+        tokenCache = null
+        tokenLoaded = true
+        runCatching { secure.edit().remove(KEY_TOKEN).apply() }
+        state.edit()
+            .remove(KEY_PAIRED)
             .remove(KEY_USER_NAME)
             .remove(KEY_CACHED_STATUS)
             .remove(KEY_CACHED_TS)
@@ -300,6 +341,7 @@ class TokenStore(context: Context) {
         const val DEFAULT_SERVER_URL = "https://punch.example.com"
         private const val KEY_SERVER_URL = "server_url"
         private const val KEY_TOKEN = "watch_token"
+        private const val KEY_PAIRED = "paired"
         private const val KEY_USER_NAME = "user_name"
         private const val KEY_LAST_LOCATION = "last_location"
         private const val KEY_CACHED_STATUS = "cached_status_json"

@@ -23,22 +23,10 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            // EncryptedSharedPreferences (Keystore) init costs hundreds of ms on a
-            // watch; build the store off the main thread so the first frame is fast.
-            var store by remember { mutableStateOf<TokenStore?>(null) }
-            LaunchedEffect(Unit) {
-                store = withContext(Dispatchers.IO) { TokenStore(applicationContext) }
-            }
-            val ready = store
-            if (ready != null) {
-                WearApp(store = ready)
-            } else {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(Color(0xFF0B0F17))
-                )
-            }
+            // Construction is cheap now; the Keystore is only touched on IO threads.
+            val store = remember { TokenStore(applicationContext) }
+            LaunchedEffect(Unit) { withContext(Dispatchers.IO) { store.warmUp() } }
+            WearApp(store = store)
         }
     }
 

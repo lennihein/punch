@@ -50,7 +50,7 @@ import java.time.ZoneId
 import java.time.temporal.ChronoUnit
 import java.util.UUID
 
-private const val RESOURCES_VERSION = "8"
+private const val RESOURCES_VERSION = "9"
 
 private const val QUEUE_STUCK_MINUTES = 5L
 
@@ -63,6 +63,7 @@ private const val CLICK_SYNC = "sync"
 
 private const val RES_SYNC = "ic_sync"
 private const val RES_SYNC_PROBLEM = "ic_sync_problem"
+private const val RES_WARN = "ic_warn_dot"
 
 class PunchTileService : TileService() {
 
@@ -70,8 +71,14 @@ class PunchTileService : TileService() {
 
     private val store by lazy { TokenStore(applicationContext) }
 
+    override fun onCreate() {
+        super.onCreate()
+        serviceScope.launch { store.warmUp() }
+    }
+
     override fun onTileRequest(requestParams: RequestBuilders.TileRequest): ListenableFuture<TileBuilders.Tile> {
-        val token = store.token
+        // Plain-prefs check only: never touch the Keystore on the tap path.
+        val token: String? = if (store.isPaired) "paired" else null
         var cached = store.getCachedStatus()
         val clickedId = requestParams.currentState?.lastClickableId.orEmpty()
 
@@ -83,7 +90,7 @@ class PunchTileService : TileService() {
                     enqueueOfflineSync(applicationContext)
                     try {
                         AtossApiClient.flushPendingPunches(store)
-                        val fresh = AtossApiClient.getStatus(store.serverUrl, token)
+                        val fresh = AtossApiClient.getStatus(store.serverUrl, store.token ?: return@launch)
                         store.saveCachedStatus(fresh)
                     } catch (_: ApiAuthException) {
                         // Ignore here; UI will prompt re-pairing when opened.
@@ -121,7 +128,7 @@ class PunchTileService : TileService() {
                     enqueueOfflineSync(applicationContext)
                     try {
                         AtossApiClient.flushPendingPunches(store)
-                        val fresh = AtossApiClient.getStatus(store.serverUrl, token)
+                        val fresh = AtossApiClient.getStatus(store.serverUrl, store.token ?: return@launch)
                         store.saveCachedStatus(fresh)
                     } catch (_: ApiAuthException) {
                         // Ignore here; UI will prompt re-pairing when opened.
@@ -250,6 +257,16 @@ class PunchTileService : TileService() {
                         .setAndroidResourceByResId(
                             ResourceBuilders.AndroidImageResourceByResId.Builder()
                                 .setResourceId(R.drawable.ic_sync)
+                                .build()
+                        )
+                        .build()
+                )
+                .addIdToImageMapping(
+                    RES_WARN,
+                    ResourceBuilders.ImageResource.Builder()
+                        .setAndroidResourceByResId(
+                            ResourceBuilders.AndroidImageResourceByResId.Builder()
+                                .setResourceId(R.drawable.ic_warn_dot)
                                 .build()
                         )
                         .build()
@@ -445,7 +462,7 @@ class PunchTileService : TileService() {
             .setVerticalAlignment(LayoutElementBuilders.VERTICAL_ALIGN_CENTER)
 
         val syncSlot = LayoutElementBuilders.Box.Builder()
-            .setWidth(dp(18f))
+            .setWidth(dp(20f))
             .setHeight(wrap())
             .setHorizontalAlignment(LayoutElementBuilders.HORIZONTAL_ALIGN_CENTER)
             .setVerticalAlignment(LayoutElementBuilders.VERTICAL_ALIGN_CENTER)
@@ -458,8 +475,8 @@ class PunchTileService : TileService() {
             syncSlot.addContent(
                 LayoutElementBuilders.Image.Builder()
                     .setResourceId(if (queueStuck) RES_SYNC_PROBLEM else RES_SYNC)
-                    .setWidth(dp(11f))
-                    .setHeight(dp(11f))
+                    .setWidth(dp(12f))
+                    .setHeight(dp(12f))
                     .build()
             )
         }
@@ -467,7 +484,7 @@ class PunchTileService : TileService() {
         statusRowBuilder.addContent(statusPill)
 
         val warnSlot = LayoutElementBuilders.Box.Builder()
-            .setWidth(dp(18f))
+            .setWidth(dp(20f))
             .setHeight(wrap())
             .setHorizontalAlignment(LayoutElementBuilders.HORIZONTAL_ALIGN_CENTER)
             .setVerticalAlignment(LayoutElementBuilders.VERTICAL_ALIGN_CENTER)
@@ -478,23 +495,10 @@ class PunchTileService : TileService() {
             )
         if (hasWarnings) {
             warnSlot.addContent(
-                LayoutElementBuilders.Box.Builder()
-                    .setWidth(dp(9f))
-                    .setHeight(dp(9f))
-                    .setModifiers(
-                        ModifiersBuilders.Modifiers.Builder()
-                            .setBackground(
-                                ModifiersBuilders.Background.Builder()
-                                    .setColor(argb(0xFFF59E0B.toInt()))
-                                    .setCorner(
-                                        ModifiersBuilders.Corner.Builder()
-                                            .setRadius(dp(5f))
-                                            .build()
-                                    )
-                                    .build()
-                            )
-                            .build()
-                    )
+                LayoutElementBuilders.Image.Builder()
+                    .setResourceId(RES_WARN)
+                    .setWidth(dp(12f))
+                    .setHeight(dp(12f))
                     .build()
             )
         }
@@ -713,7 +717,7 @@ class TileRefreshReceiver : BroadcastReceiver() {
         if (action == Intent.ACTION_MY_PACKAGE_REPLACED || action == ACTION_REFRESH_TILE) {
             val appCtx = context.applicationContext
             TileService.getUpdater(appCtx).requestUpdate(PunchTileService::class.java)
-            if (!TokenStore(appCtx).token.isNullOrBlank()) {
+            if (TokenStore(appCtx).isPaired) {
                 PunchTileService.enqueueBackgroundRefresh(appCtx)
             }
         }
