@@ -33,7 +33,10 @@ class TileActionActivity : ComponentActivity() {
 
         scope.launch {
             try {
-                val updated = AtossApiClient.performOrQueuePunch(
+                // Optimistic-first: local-only enqueue (no Keystore, no network), so the
+                // haptic and tile refresh fire immediately. The PunchSyncWorker scheduled
+                // inside flushes the punch to the server in the background.
+                val updated = AtossApiClient.enqueuePunchLocally(
                     context = applicationContext,
                     store = store,
                     action = action,

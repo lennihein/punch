@@ -241,9 +241,12 @@ class TokenStore(private val context: Context) {
         action: String,
         location: String,
         localDate: String,
-        localHm: String
+        localHm: String,
+        baseStatus: WatchStatus? = null
     ): WatchStatus {
-        val base = getCachedStatus() ?: WatchStatus(
+        // Callers that already parsed the cached status (e.g. the tile tap path)
+        // pass it in to skip a second prefs read + JSON parse.
+        val base = baseStatus ?: getCachedStatus() ?: WatchStatus(
             clockedIn = false,
             activeEntry = null,
             todayCompletedMinutes = 0,

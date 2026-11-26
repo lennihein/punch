@@ -103,18 +103,29 @@ def test_web_punch_flow_and_location_switch(monkeypatch, tmp_path: Path):
         r_dash = client.get("/", headers=headers)
         assert r_dash.status_code == 200
         assert "Clocked in · remote" in r_dash.text
+        # While clocked in the dashboard shows only the Clock Out button — no
+        # switch-to-office/remote button.
+        assert "Clock Out" in r_dash.text
+        assert "Switch to Office" not in r_dash.text
+        assert "Switch to Remote" not in r_dash.text
 
-        # Switch to office
+        # Switch to office (the /punch route still accepts switch_location)
         r2 = client.post("/punch", data={"action": "switch_location", "location": "office"}, headers=headers, follow_redirects=False)
         assert r2.status_code == 303
         r_dash2 = client.get("/", headers=headers)
         assert "Clocked in · office" in r_dash2.text
+        assert "Switch to Office" not in r_dash2.text
+        assert "Switch to Remote" not in r_dash2.text
 
         # Clock out
         r3 = client.post("/punch", data={"action": "out"}, headers=headers, follow_redirects=False)
         assert r3.status_code == 303
         r_dash3 = client.get("/", headers=headers)
         assert "Clocked out" in r_dash3.text
+        # Clocked out: no Clock Out button, just the two Clock In buttons.
+        assert "Clock Out" not in r_dash3.text
+        assert "Clock In (Remote)" in r_dash3.text
+        assert "Clock In (Office)" in r_dash3.text
 
 
 def test_watch_pairing_and_idempotent_punch(monkeypatch, tmp_path: Path):

@@ -32,19 +32,6 @@
       <input type="hidden" name="action" value="out">
       <button type="submit" class="btn btn-red">Clock Out</button>
     </form>
-    {% if live.active_entry.location != 'office' %}
-    <form method="post" action="/punch">
-      <input type="hidden" name="action" value="switch_location">
-      <input type="hidden" name="location" value="office">
-      <button type="submit" class="btn">Switch to Office</button>
-    </form>
-    {% else %}
-    <form method="post" action="/punch">
-      <input type="hidden" name="action" value="switch_location">
-      <input type="hidden" name="location" value="remote">
-      <button type="submit" class="btn">Switch to Remote</button>
-    </form>
-    {% endif %}
   </div>
   {% else %}
   <div class="muted">Not currently working. Start your next interval:</div>

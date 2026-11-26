@@ -35,6 +35,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -360,7 +361,10 @@ private fun PunchScreen(
         errorMsg = null
         scope.launch {
             try {
-                val updated = AtossApiClient.performOrQueuePunch(
+                // Optimistic-first: persist + render the punch immediately. This only
+                // touches plain prefs — no Keystore read, no network — so the UI and
+                // haptic fire instantly even on a cold start.
+                val updated = AtossApiClient.enqueuePunchLocally(
                     context = context,
                     store = store,
                     action = action,
@@ -464,8 +468,11 @@ private fun PunchScreen(
                             text = if (isClockedIn) {
                                 "● ${activeLoc.uppercase()}"
                             } else {
-                                "○ OFF DUTY"
+                                "○ ABSENT"
                             },
+                            // Monospace so REMOTE / OFFICE / ABSENT (all 6 chars) take
+                            // the exact same width and the pill never jitters.
+                            fontFamily = FontFamily.Monospace,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = if (isClockedIn) EmeraldBright else SlateMuted
@@ -517,56 +524,30 @@ private fun PunchScreen(
                 }
             }
 
-            // 3. Side-by-Side Primary Action Row (matches Widget)
+            // 3. Primary Action Row (matches Widget)
             item {
                 if (isClockedIn) {
-                    val switchToOffice = activeLoc != "office"
-                    val targetLoc = if (switchToOffice) "office" else "remote"
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        modifier = Modifier.fillMaxWidth(0.94f)
+                    // Clocked in: a single centered red Clock Out button. Same height
+                    // and full row width as the clock-in buttons, so the layout never
+                    // jumps when the state flips.
+                    Button(
+                        onClick = { triggerPunch("out", activeLoc) },
+                        enabled = busyAction == null,
+                        colors = ButtonDefaults.buttonColors(
+                            backgroundColor = RoseAction,
+                            contentColor = Color.White
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth(0.94f)
+                            .height(40.dp)
                     ) {
-                        Button(
-                            onClick = { triggerPunch("out", activeLoc) },
-                            enabled = busyAction == null,
-                            colors = ButtonDefaults.buttonColors(
-                                backgroundColor = RoseAction,
-                                contentColor = Color.White
-                            ),
-                            modifier = Modifier
-                                .weight(1.08f)
-                                .height(40.dp)
-                        ) {
-                            if (busyAction?.startsWith("out:") == true) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(16.dp),
-                                    indicatorColor = Color.White
-                                )
-                            } else {
-                                Text("Clock Out", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                            }
-                        }
-
-                        Button(
-                            onClick = { triggerPunch("switch_location", targetLoc) },
-                            enabled = busyAction == null,
-                            colors = ButtonDefaults.buttonColors(
-                                backgroundColor = Color(0xFF334155),
-                                contentColor = SlateText
-                            ),
-                            modifier = Modifier
-                                .weight(0.92f)
-                                .height(40.dp)
-                        ) {
-                            if (busyAction?.startsWith("switch_location:") == true) {
-                                CircularProgressIndicator(modifier = Modifier.size(14.dp))
-                            } else {
-                                Text(
-                                    text = if (switchToOffice) "→ Office" else "→ Remote",
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
+                        if (busyAction?.startsWith("out:") == true) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                indicatorColor = Color.White
+                            )
+                        } else {
+                            Text("Clock Out", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                 } else {

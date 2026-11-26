@@ -145,7 +145,9 @@ object AtossApiClient {
     }
 
     suspend fun flushPendingPunches(store: TokenStore): WatchStatus? = flushMutex.withLock {
-        val token = store.token ?: return@withLock null
+        // The token lives in EncryptedSharedPreferences (Keystore); reading it can be
+        // slow, so never do it on the caller's (main) thread.
+        val token = withContext(Dispatchers.IO) { store.token } ?: return@withLock null
         val pending = store.getPendingPunches()
         if (pending.isEmpty()) return@withLock null
 
@@ -174,30 +176,31 @@ object AtossApiClient {
         latest
     }
 
-    suspend fun performOrQueuePunch(
+    /**
+     * Persists the punch locally and returns the optimistic status immediately.
+     * This only touches plain SharedPreferences — no Keystore token read, no network —
+     * so callers can apply the result to the UI (and fire haptics) without blocking.
+     * The queued [PunchSyncWorker] (and the caller's status refresh) flush it to the
+     * server in the background; a permanent rejection is dropped by the flush and the
+     * next status refresh reconciles the UI with the server.
+     */
+    suspend fun enqueuePunchLocally(
         context: Context,
         store: TokenStore,
         action: String,
         location: String
-    ): WatchStatus {
-        if (store.token.isNullOrBlank()) throw ApiAuthException("Watch is not paired")
+    ): WatchStatus = withContext(Dispatchers.IO) {
         val nowTs = OffsetDateTime.now().toString()
         val nowLocal = LocalDateTime.now()
         val localDate = nowLocal.toLocalDate().toString()
         val localHm = "%02d:%02d".format(nowLocal.hour, nowLocal.minute)
         val eventId = UUID.randomUUID().toString()
 
-        // Optimistic-first: persist and show the punch immediately instead of waiting
-        // on the network. The queued PunchSyncWorker (and the caller's status refresh)
-        // flushes it in the background; a permanent rejection is dropped by the flush
-        // and the next status refresh reconciles the UI with the server.
-        return withContext(Dispatchers.IO) {
-            store.enqueuePendingPunch(PendingPunch(action, location, nowTs, eventId))
-            val optimistic = store.applyOptimisticPunch(action, location, localDate, localHm)
-            // WorkManager init is not free; schedule it detached so it never delays
-            // the optimistic UI response.
-            queueScope.launch { PunchTileService.enqueueOfflineSync(context) }
-            optimistic
-        }
+        store.enqueuePendingPunch(PendingPunch(action, location, nowTs, eventId))
+        val optimistic = store.applyOptimisticPunch(action, location, localDate, localHm)
+        // WorkManager init is not free; schedule it detached so it never delays
+        // the optimistic UI response.
+        queueScope.launch { PunchTileService.enqueueOfflineSync(context) }
+        optimistic
     }
 }

@@ -29,6 +29,9 @@ android {
             )
         }
         release {
+            // Sideloadable via ADB: sign release with the debug key so the watch
+            // accepts installs over the existing debug-signed app.
+            signingConfig = signingConfigs.getByName("debug")
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(

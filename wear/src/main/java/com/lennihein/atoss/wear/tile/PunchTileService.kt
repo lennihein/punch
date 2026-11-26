@@ -57,9 +57,13 @@ private const val QUEUE_STUCK_MINUTES = 5L
 private const val CLICK_PUNCH_IN_REMOTE = "punch_in_remote"
 private const val CLICK_PUNCH_IN_OFFICE = "punch_in_office"
 private const val CLICK_PUNCH_OUT = "punch_out"
-private const val CLICK_SWITCH_REMOTE = "switch_remote"
-private const val CLICK_SWITCH_OFFICE = "switch_office"
 private const val CLICK_SYNC = "sync"
+
+// Fixed pill width: the tile renderer only guarantees the system font (Roboto /
+// Roboto Flex), which is proportional — there is no monospace typeface on tiles.
+// REMOTE / OFFICE / ABSENT are all exactly 6 chars plus the constant "● "/"○ "
+// prefix, so a fixed-width, centered pill can never jitter between states.
+private const val STATUS_PILL_WIDTH_DP = 88f
 
 private const val RES_SYNC = "ic_sync"
 private const val RES_SYNC_PROBLEM = "ic_sync_problem"
@@ -81,6 +85,18 @@ class PunchTileService : TileService() {
         val token: String? = if (store.isPaired) "paired" else null
         var cached = store.getCachedStatus()
         val clickedId = requestParams.currentState?.lastClickableId.orEmpty()
+
+        // Read the queue once up front: the tap path only appends to it, so the
+        // count can be bumped locally instead of re-parsing the JSON to render.
+        val pendingPunches = store.getPendingPunches()
+        var queuedCount = pendingPunches.size
+        val queueStuck = pendingPunches.any { p ->
+            try {
+                Duration.between(OffsetDateTime.parse(p.clientTs), OffsetDateTime.now()).toMinutes() >= QUEUE_STUCK_MINUTES
+            } catch (_: Exception) {
+                false
+            }
+        }
 
         var handledClick = false
         if (!token.isNullOrBlank() && clickedId.isNotEmpty()) {
@@ -106,8 +122,6 @@ class PunchTileService : TileService() {
                 CLICK_PUNCH_IN_REMOTE -> "in" to "remote"
                 CLICK_PUNCH_IN_OFFICE -> "in" to "office"
                 CLICK_PUNCH_OUT -> "out" to (cached?.activeEntry?.location ?: store.lastLocation)
-                CLICK_SWITCH_REMOTE -> "switch_location" to "remote"
-                CLICK_SWITCH_OFFICE -> "switch_location" to "office"
                 else -> null
             }
 
@@ -121,7 +135,15 @@ class PunchTileService : TileService() {
                 val eventId = UUID.randomUUID().toString()
 
                 store.enqueuePendingPunch(PendingPunch(action, location, nowTs, eventId))
-                cached = store.applyOptimisticPunch(action, location, localDate, localHm)
+                cached = store.applyOptimisticPunch(
+                    action,
+                    location,
+                    localDate,
+                    localHm,
+                    baseStatus = cached
+                )
+                // The fresh punch is seconds old, so it cannot flip queueStuck.
+                queuedCount += 1
                 vibrateConfirm()
 
                 serviceScope.launch {
@@ -141,35 +163,49 @@ class PunchTileService : TileService() {
             }
         }
 
-        val pendingPunches = store.getPendingPunches()
-        val queuedCount = pendingPunches.size
         Log.d(
             "PunchTile",
             "onTileRequest clicked=$clickedId clockedIn=${cached?.clockedIn} queued=$queuedCount"
         )
-        val queueStuck = pendingPunches.any { p ->
-            try {
-                Duration.between(OffsetDateTime.parse(p.clientTs), OffsetDateTime.now()).toMinutes() >= QUEUE_STUCK_MINUTES
-            } catch (_: Exception) {
-                false
-            }
-        }
         if (!token.isNullOrBlank() && !handledClick) {
             val ageMs = System.currentTimeMillis() - store.getCachedStatusTimestampMs()
-            if (queuedCount > 0) {
-                enqueueOfflineSync(applicationContext)
-            } else if (ageMs > 60_000L) {
-                enqueueBackgroundRefresh(applicationContext)
+            val needSync = queuedCount > 0
+            val needRefresh = !needSync && ageMs > 60_000L
+            if (needSync || needRefresh) {
+                // WorkManager.getInstance() pays its one-time init cost on the
+                // calling thread; keep it off the synchronous tile-render path.
+                serviceScope.launch {
+                    if (needSync) enqueueOfflineSync(applicationContext)
+                    else enqueueBackgroundRefresh(applicationContext)
+                }
             }
         }
 
         val timelineBuilder = TimelineBuilders.Timeline.Builder()
-        val nowLocal = LocalDateTime.now()
-        val activeEntry = cached?.activeEntry
-        if (!token.isNullOrBlank() && cached?.clockedIn == true && activeEntry != null) {
-            val startDt = try {
-                LocalDateTime.of(LocalDate.parse(activeEntry.date), LocalTime.parse(activeEntry.start))
-            } catch (_: Exception) {
+        if (token.isNullOrBlank()) {
+            timelineBuilder.addTimelineEntry(
+                timelineEntryOf(buildTileLayout(token, cached, queuedCount, 0, queueStuck))
+            )
+        } else {
+            // The clickable, status header and action row are identical for every
+            // timeline entry. Built ProtoLayout elements are immutable, so build
+            // them once and share them across all 31 entries instead of rebuilding
+            // a full tree per minute slot.
+            val openMainClickable = buildOpenMainClickable()
+            val prebuilt = PrebuiltTileParts(
+                openMainClickable = openMainClickable,
+                statusHeader = buildStatusHeader(cached, queuedCount, queueStuck, openMainClickable),
+                actionRow = buildActionRow(cached)
+            )
+            val nowLocal = LocalDateTime.now()
+            val activeEntry = cached?.activeEntry
+            val startDt = if (cached?.clockedIn == true && activeEntry != null) {
+                try {
+                    LocalDateTime.of(LocalDate.parse(activeEntry.date), LocalTime.parse(activeEntry.start))
+                } catch (_: Exception) {
+                    null
+                }
+            } else {
                 null
             }
             if (startDt != null) {
@@ -181,7 +217,14 @@ class PunchTileService : TileService() {
                     val elapsedMins = Duration.between(startDt, slotStart).toMinutes().toInt().coerceAtLeast(0)
                     val startMs = slotStart.atZone(zone).toInstant().toEpochMilli()
                     val endMs = slotEnd.atZone(zone).toInstant().toEpochMilli()
-                    val slotLayout = buildTileLayout(token, cached, queuedCount, elapsedMins, queueStuck)
+                    val slotLayout = buildTileLayout(
+                        token,
+                        cached,
+                        queuedCount,
+                        elapsedMins,
+                        queueStuck,
+                        prebuilt
+                    )
                     timelineBuilder.addTimelineEntry(
                         TimelineBuilders.TimelineEntry.Builder()
                             .setValidity(
@@ -199,39 +242,20 @@ class PunchTileService : TileService() {
                     )
                 }
                 val fallbackElapsed = Duration.between(startDt, nowLocal).toMinutes().toInt().coerceAtLeast(0)
-                val fallbackLayout = buildTileLayout(token, cached, queuedCount, fallbackElapsed, queueStuck)
-                timelineBuilder.addTimelineEntry(
-                    TimelineBuilders.TimelineEntry.Builder()
-                        .setLayout(
-                            LayoutElementBuilders.Layout.Builder()
-                                .setRoot(fallbackLayout)
-                                .build()
-                        )
-                        .build()
+                val fallbackLayout = buildTileLayout(
+                    token,
+                    cached,
+                    queuedCount,
+                    fallbackElapsed,
+                    queueStuck,
+                    prebuilt
                 )
+                timelineBuilder.addTimelineEntry(timelineEntryOf(fallbackLayout))
             } else {
-                val layout = buildTileLayout(token, cached, queuedCount, 0, queueStuck)
                 timelineBuilder.addTimelineEntry(
-                    TimelineBuilders.TimelineEntry.Builder()
-                        .setLayout(
-                            LayoutElementBuilders.Layout.Builder()
-                                .setRoot(layout)
-                                .build()
-                        )
-                        .build()
+                    timelineEntryOf(buildTileLayout(token, cached, queuedCount, 0, queueStuck, prebuilt))
                 )
             }
-        } else {
-            val layout = buildTileLayout(token, cached, queuedCount, 0, queueStuck)
-            timelineBuilder.addTimelineEntry(
-                TimelineBuilders.TimelineEntry.Builder()
-                    .setLayout(
-                        LayoutElementBuilders.Layout.Builder()
-                            .setRoot(layout)
-                            .build()
-                    )
-                    .build()
-            )
         }
 
         val tile = TileBuilders.Tile.Builder()
@@ -285,14 +309,26 @@ class PunchTileService : TileService() {
         )
     }
 
-    private fun buildTileLayout(
-        token: String?,
-        cached: WatchStatus?,
-        queuedCount: Int,
-        activeElapsedMins: Int = 0,
-        queueStuck: Boolean = false
-    ): LayoutElementBuilders.LayoutElement {
-        val openMainClickable = Clickable.Builder()
+    private class PrebuiltTileParts(
+        val openMainClickable: Clickable,
+        val statusHeader: LayoutElementBuilders.LayoutElement,
+        val actionRow: LayoutElementBuilders.LayoutElement
+    )
+
+    private fun timelineEntryOf(
+        root: LayoutElementBuilders.LayoutElement
+    ): TimelineBuilders.TimelineEntry {
+        return TimelineBuilders.TimelineEntry.Builder()
+            .setLayout(
+                LayoutElementBuilders.Layout.Builder()
+                    .setRoot(root)
+                    .build()
+            )
+            .build()
+    }
+
+    private fun buildOpenMainClickable(): Clickable {
+        return Clickable.Builder()
             .setId("open_app")
             .setOnClick(
                 ActionBuilders.LaunchAction.Builder()
@@ -305,6 +341,19 @@ class PunchTileService : TileService() {
                     .build()
             )
             .build()
+    }
+
+    private fun buildTileLayout(
+        token: String?,
+        cached: WatchStatus?,
+        queuedCount: Int,
+        activeElapsedMins: Int = 0,
+        queueStuck: Boolean = false,
+        prebuilt: PrebuiltTileParts? = null
+    ): LayoutElementBuilders.LayoutElement {
+        // Built ProtoLayout elements are immutable, so when `prebuilt` is supplied
+        // the shared subtrees are reused instead of rebuilt per timeline entry.
+        val openMainClickable = prebuilt?.openMainClickable ?: buildOpenMainClickable()
 
         if (token.isNullOrBlank()) {
             return LayoutElementBuilders.Box.Builder()
@@ -352,13 +401,6 @@ class PunchTileService : TileService() {
 
         val isClockedIn = cached?.clockedIn == true
         val activeEntry = cached?.activeEntry
-        val currentLoc = activeEntry?.location ?: cached?.lastLocation ?: "remote"
-        val statusText = if (isClockedIn) {
-            "● ${currentLoc.uppercase()}"
-        } else {
-            "○ OFF DUTY"
-        }
-        val statusColor = if (isClockedIn) 0xFF34D399.toInt() else 0xFF94A3B8.toInt()
 
         val completedMins = cached?.todayCompletedMinutes ?: 0
         val breakMins = cached?.breakActualMinutes ?: 0
@@ -374,136 +416,9 @@ class PunchTileService : TileService() {
             breakMins
         )
 
-        val actionRow = LayoutElementBuilders.Row.Builder()
-            .setWidth(wrap())
-            .setVerticalAlignment(LayoutElementBuilders.VERTICAL_ALIGN_CENTER)
-
-        if (isClockedIn) {
-            actionRow.addContent(
-                pillButton(
-                    label = "Clock Out",
-                    bgColor = 0xFFE11D48.toInt(),
-                    textColor = 0xFFFFFFFF.toInt(),
-                    clickable = loadActionClickable(CLICK_PUNCH_OUT)
-                )
-            )
-            actionRow.addContent(
-                LayoutElementBuilders.Spacer.Builder().setWidth(dp(6f)).build()
-            )
-            val switchToOffice = currentLoc != "office"
-            actionRow.addContent(
-                pillButton(
-                    label = if (switchToOffice) "→ Office" else "→ Remote",
-                    bgColor = 0xFF334155.toInt(),
-                    textColor = 0xFFF8FAFC.toInt(),
-                    clickable = loadActionClickable(
-                        if (switchToOffice) CLICK_SWITCH_OFFICE else CLICK_SWITCH_REMOTE
-                    )
-                )
-            )
-        } else {
-            actionRow.addContent(
-                pillButton(
-                    label = "Remote",
-                    bgColor = 0xFF0D9488.toInt(),
-                    textColor = 0xFFFFFFFF.toInt(),
-                    clickable = loadActionClickable(CLICK_PUNCH_IN_REMOTE)
-                )
-            )
-            actionRow.addContent(
-                LayoutElementBuilders.Spacer.Builder().setWidth(dp(6f)).build()
-            )
-            actionRow.addContent(
-                pillButton(
-                    label = "Office",
-                    bgColor = 0xFF4F46E5.toInt(),
-                    textColor = 0xFFFFFFFF.toInt(),
-                    clickable = loadActionClickable(CLICK_PUNCH_IN_OFFICE)
-                )
-            )
-        }
-
-        val hasWarnings = cached?.warnings.orEmpty().isNotEmpty()
-
-        val statusPill = LayoutElementBuilders.Box.Builder()
-            .setWidth(wrap())
-            .setHeight(wrap())
-            .setModifiers(
-                ModifiersBuilders.Modifiers.Builder()
-                    .setBackground(
-                        ModifiersBuilders.Background.Builder()
-                            .setColor(argb(0xFF1E293B.toInt()))
-                            .setCorner(
-                                ModifiersBuilders.Corner.Builder()
-                                    .setRadius(dp(999f))
-                                    .build()
-                            )
-                            .build()
-                    )
-                    .setPadding(
-                        ModifiersBuilders.Padding.Builder()
-                            .setStart(dp(10f))
-                            .setEnd(dp(10f))
-                            .setTop(dp(4f))
-                            .setBottom(dp(4f))
-                            .build()
-                    )
-                    .setClickable(openMainClickable)
-                    .build()
-            )
-            .addContent(styledText(statusText, 11f, statusColor, bold = true))
-            .build()
-
-        // Compact status row: the sync button and the warning dot sit in small fixed
-        // side slots that are always present, so the pill keeps its exact centred
-        // position when either indicator appears or disappears.
-        val statusRowBuilder = LayoutElementBuilders.Row.Builder()
-            .setWidth(wrap())
-            .setVerticalAlignment(LayoutElementBuilders.VERTICAL_ALIGN_CENTER)
-
-        val syncSlot = LayoutElementBuilders.Box.Builder()
-            .setWidth(dp(20f))
-            .setHeight(wrap())
-            .setHorizontalAlignment(LayoutElementBuilders.HORIZONTAL_ALIGN_CENTER)
-            .setVerticalAlignment(LayoutElementBuilders.VERTICAL_ALIGN_CENTER)
-            .setModifiers(
-                ModifiersBuilders.Modifiers.Builder()
-                    .setClickable(loadActionClickable(CLICK_SYNC))
-                    .build()
-            )
-        if (queuedCount > 0) {
-            syncSlot.addContent(
-                LayoutElementBuilders.Image.Builder()
-                    .setResourceId(if (queueStuck) RES_SYNC_PROBLEM else RES_SYNC)
-                    .setWidth(dp(12f))
-                    .setHeight(dp(12f))
-                    .build()
-            )
-        }
-        statusRowBuilder.addContent(syncSlot.build())
-        statusRowBuilder.addContent(statusPill)
-
-        val warnSlot = LayoutElementBuilders.Box.Builder()
-            .setWidth(dp(20f))
-            .setHeight(wrap())
-            .setHorizontalAlignment(LayoutElementBuilders.HORIZONTAL_ALIGN_CENTER)
-            .setVerticalAlignment(LayoutElementBuilders.VERTICAL_ALIGN_CENTER)
-            .setModifiers(
-                ModifiersBuilders.Modifiers.Builder()
-                    .setClickable(openMainClickable)
-                    .build()
-            )
-        if (hasWarnings) {
-            warnSlot.addContent(
-                LayoutElementBuilders.Image.Builder()
-                    .setResourceId(RES_WARN)
-                    .setWidth(dp(12f))
-                    .setHeight(dp(12f))
-                    .build()
-            )
-        }
-        statusRowBuilder.addContent(warnSlot.build())
-        val statusHeader = statusRowBuilder.build()
+        val statusHeader = prebuilt?.statusHeader
+            ?: buildStatusHeader(cached, queuedCount, queueStuck, openMainClickable)
+        val actionRow = prebuilt?.actionRow ?: buildActionRow(cached)
 
         val heroBlock = LayoutElementBuilders.Column.Builder()
             .setWidth(wrap())
@@ -556,9 +471,165 @@ class PunchTileService : TileService() {
                     .addContent(LayoutElementBuilders.Spacer.Builder().setHeight(dp(6f)).build())
                     .addContent(heroBlock)
                     .addContent(LayoutElementBuilders.Spacer.Builder().setHeight(dp(10f)).build())
-                    .addContent(actionRow.build())
+                    .addContent(actionRow)
                     .build()
             )
+            .build()
+    }
+
+    private fun buildActionRow(cached: WatchStatus?): LayoutElementBuilders.LayoutElement {
+        val isClockedIn = cached?.clockedIn == true
+
+        val actionRow = LayoutElementBuilders.Row.Builder()
+            .setWidth(wrap())
+            .setVerticalAlignment(LayoutElementBuilders.VERTICAL_ALIGN_CENTER)
+
+        if (isClockedIn) {
+            // Clocked in: a single centered red Clock Out button (the parent column
+            // centers this wrap-width row, so the button stays centered).
+            actionRow.addContent(
+                pillButton(
+                    label = "Clock Out",
+                    bgColor = 0xFFE11D48.toInt(),
+                    textColor = 0xFFFFFFFF.toInt(),
+                    clickable = loadActionClickable(CLICK_PUNCH_OUT)
+                )
+            )
+        } else {
+            actionRow.addContent(
+                pillButton(
+                    label = "Remote",
+                    bgColor = 0xFF0D9488.toInt(),
+                    textColor = 0xFFFFFFFF.toInt(),
+                    clickable = loadActionClickable(CLICK_PUNCH_IN_REMOTE)
+                )
+            )
+            actionRow.addContent(
+                LayoutElementBuilders.Spacer.Builder().setWidth(dp(6f)).build()
+            )
+            actionRow.addContent(
+                pillButton(
+                    label = "Office",
+                    bgColor = 0xFF4F46E5.toInt(),
+                    textColor = 0xFFFFFFFF.toInt(),
+                    clickable = loadActionClickable(CLICK_PUNCH_IN_OFFICE)
+                )
+            )
+        }
+        return actionRow.build()
+    }
+
+    private fun buildStatusHeader(
+        cached: WatchStatus?,
+        queuedCount: Int,
+        queueStuck: Boolean,
+        openMainClickable: Clickable
+    ): LayoutElementBuilders.LayoutElement {
+        val isClockedIn = cached?.clockedIn == true
+        val activeEntry = cached?.activeEntry
+        val currentLoc = activeEntry?.location ?: cached?.lastLocation ?: "remote"
+        val statusText = if (isClockedIn) {
+            "● ${currentLoc.uppercase()}"
+        } else {
+            "○ ABSENT"
+        }
+        val statusColor = if (isClockedIn) 0xFF34D399.toInt() else 0xFF94A3B8.toInt()
+        val hasWarnings = cached?.warnings.orEmpty().isNotEmpty()
+
+        val statusPill = LayoutElementBuilders.Box.Builder()
+            // Fixed width (see STATUS_PILL_WIDTH_DP): REMOTE / OFFICE / ABSENT are all
+            // 6 chars, so the pill occupies the exact same space in every state.
+            .setWidth(dp(STATUS_PILL_WIDTH_DP))
+            .setHeight(wrap())
+            .setHorizontalAlignment(LayoutElementBuilders.HORIZONTAL_ALIGN_CENTER)
+            .setModifiers(
+                ModifiersBuilders.Modifiers.Builder()
+                    .setBackground(
+                        ModifiersBuilders.Background.Builder()
+                            .setColor(argb(0xFF1E293B.toInt()))
+                            .setCorner(
+                                ModifiersBuilders.Corner.Builder()
+                                    .setRadius(dp(999f))
+                                    .build()
+                            )
+                            .build()
+                    )
+                    .setPadding(
+                        ModifiersBuilders.Padding.Builder()
+                            .setStart(dp(10f))
+                            .setEnd(dp(10f))
+                            .setTop(dp(4f))
+                            .setBottom(dp(4f))
+                            .build()
+                    )
+                    .setClickable(openMainClickable)
+                    .build()
+            )
+            .addContent(styledText(statusText, 11f, statusColor, bold = true))
+            .build()
+
+        // Compact status row: the sync button and the warning dot sit in fixed
+        // 20x20 dp side slots that can never collapse — explicit dp width AND
+        // height, plus a placeholder Spacer child when empty — so the pill keeps
+        // its exact centred position whether either indicator is shown or not.
+        val statusRowBuilder = LayoutElementBuilders.Row.Builder()
+            .setWidth(wrap())
+            .setVerticalAlignment(LayoutElementBuilders.VERTICAL_ALIGN_CENTER)
+
+        val syncSlot = LayoutElementBuilders.Box.Builder()
+            .setWidth(dp(20f))
+            .setHeight(dp(20f))
+            .setHorizontalAlignment(LayoutElementBuilders.HORIZONTAL_ALIGN_CENTER)
+            .setVerticalAlignment(LayoutElementBuilders.VERTICAL_ALIGN_CENTER)
+            .setModifiers(
+                ModifiersBuilders.Modifiers.Builder()
+                    .setClickable(loadActionClickable(CLICK_SYNC))
+                    .build()
+            )
+        if (queuedCount > 0) {
+            syncSlot.addContent(
+                LayoutElementBuilders.Image.Builder()
+                    .setResourceId(if (queueStuck) RES_SYNC_PROBLEM else RES_SYNC)
+                    .setWidth(dp(12f))
+                    .setHeight(dp(12f))
+                    .build()
+            )
+        } else {
+            syncSlot.addContent(slotPlaceholder())
+        }
+        statusRowBuilder.addContent(syncSlot.build())
+        statusRowBuilder.addContent(statusPill)
+
+        val warnSlot = LayoutElementBuilders.Box.Builder()
+            .setWidth(dp(20f))
+            .setHeight(dp(20f))
+            .setHorizontalAlignment(LayoutElementBuilders.HORIZONTAL_ALIGN_CENTER)
+            .setVerticalAlignment(LayoutElementBuilders.VERTICAL_ALIGN_CENTER)
+            .setModifiers(
+                ModifiersBuilders.Modifiers.Builder()
+                    .setClickable(openMainClickable)
+                    .build()
+            )
+        if (hasWarnings) {
+            warnSlot.addContent(
+                LayoutElementBuilders.Image.Builder()
+                    .setResourceId(RES_WARN)
+                    .setWidth(dp(12f))
+                    .setHeight(dp(12f))
+                    .build()
+            )
+        } else {
+            warnSlot.addContent(slotPlaceholder())
+        }
+        statusRowBuilder.addContent(warnSlot.build())
+        return statusRowBuilder.build()
+    }
+
+    /** Fixed-size invisible child so an empty side slot keeps its full 20x20 dp box. */
+    private fun slotPlaceholder(): LayoutElementBuilders.Spacer {
+        return LayoutElementBuilders.Spacer.Builder()
+            .setWidth(dp(12f))
+            .setHeight(dp(12f))
             .build()
     }
 
