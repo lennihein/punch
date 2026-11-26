@@ -6,6 +6,9 @@
 *.typ
 *.png
 
+# Served app icon assets are source, not generated previews
+!/app/static/*.png
+
 # Windows zone identifier sidecar streams copied over
 *:[Zz]one.Identifier*
 

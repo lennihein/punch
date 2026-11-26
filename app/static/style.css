@@ -295,6 +295,12 @@ section[id] {
   box-shadow: 0 0 0 3px rgba(61, 158, 109, 0.2);
 }
 
+.brand-icon {
+  display: block;
+  width: 26px;
+  height: 26px;
+}
+
 .nav {
   display: flex;
   align-items: center;

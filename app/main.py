@@ -184,8 +184,34 @@ def pwa_manifest() -> JSONResponse:
         "short_name": "Punch!",
         "start_url": "/",
         "display": "standalone",
-        "background_color": "#f6f7f9",
+        "background_color": "#fff6e5",
         "theme_color": "#f6f7f9",
+        "icons": [
+            {
+                "src": "/static/punch_icon.svg",
+                "sizes": "any",
+                "type": "image/svg+xml",
+                "purpose": "any",
+            },
+            {
+                "src": "/static/icon-192.png",
+                "sizes": "192x192",
+                "type": "image/png",
+                "purpose": "any",
+            },
+            {
+                "src": "/static/icon-512.png",
+                "sizes": "512x512",
+                "type": "image/png",
+                "purpose": "any",
+            },
+            {
+                "src": "/static/icon-maskable-512.png",
+                "sizes": "512x512",
+                "type": "image/png",
+                "purpose": "maskable",
+            },
+        ],
     })
 
 
