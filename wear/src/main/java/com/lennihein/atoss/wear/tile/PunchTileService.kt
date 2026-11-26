@@ -6,6 +6,7 @@ import android.content.Intent
 import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
+import android.util.Log
 import androidx.wear.protolayout.ActionBuilders
 import androidx.wear.protolayout.ColorBuilders.argb
 import androidx.wear.protolayout.DimensionBuilders.dp
@@ -29,6 +30,7 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
+import com.lennihein.atoss.wear.R
 import com.lennihein.atoss.wear.data.PendingPunch
 import com.lennihein.atoss.wear.data.TokenStore
 import com.lennihein.atoss.wear.data.WatchStatus
@@ -48,7 +50,7 @@ import java.time.ZoneId
 import java.time.temporal.ChronoUnit
 import java.util.UUID
 
-private const val RESOURCES_VERSION = "7"
+private const val RESOURCES_VERSION = "8"
 
 private const val QUEUE_STUCK_MINUTES = 5L
 
@@ -57,19 +59,42 @@ private const val CLICK_PUNCH_IN_OFFICE = "punch_in_office"
 private const val CLICK_PUNCH_OUT = "punch_out"
 private const val CLICK_SWITCH_REMOTE = "switch_remote"
 private const val CLICK_SWITCH_OFFICE = "switch_office"
+private const val CLICK_SYNC = "sync"
+
+private const val RES_SYNC = "ic_sync"
+private const val RES_SYNC_PROBLEM = "ic_sync_problem"
 
 class PunchTileService : TileService() {
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+    private val store by lazy { TokenStore(applicationContext) }
+
     override fun onTileRequest(requestParams: RequestBuilders.TileRequest): ListenableFuture<TileBuilders.Tile> {
-        val store = TokenStore(applicationContext)
         val token = store.token
         var cached = store.getCachedStatus()
         val clickedId = requestParams.currentState?.lastClickableId.orEmpty()
 
         var handledClick = false
         if (!token.isNullOrBlank() && clickedId.isNotEmpty()) {
+            if (clickedId == CLICK_SYNC) {
+                handledClick = true
+                serviceScope.launch {
+                    enqueueOfflineSync(applicationContext)
+                    try {
+                        AtossApiClient.flushPendingPunches(store)
+                        val fresh = AtossApiClient.getStatus(store.serverUrl, token)
+                        store.saveCachedStatus(fresh)
+                    } catch (_: ApiAuthException) {
+                        // Ignore here; UI will prompt re-pairing when opened.
+                    } catch (_: Exception) {
+                        // Offline sync worker remains scheduled with NetworkType.CONNECTED.
+                    } finally {
+                        getUpdater(applicationContext).requestUpdate(PunchTileService::class.java)
+                    }
+                }
+            }
+
             val punchSpec: Pair<String, String>? = when (clickedId) {
                 CLICK_PUNCH_IN_REMOTE -> "in" to "remote"
                 CLICK_PUNCH_IN_OFFICE -> "in" to "office"
@@ -92,17 +117,18 @@ class PunchTileService : TileService() {
                 cached = store.applyOptimisticPunch(action, location, localDate, localHm)
                 vibrateConfirm()
 
-                enqueueOfflineSync(applicationContext)
                 serviceScope.launch {
+                    enqueueOfflineSync(applicationContext)
                     try {
                         AtossApiClient.flushPendingPunches(store)
                         val fresh = AtossApiClient.getStatus(store.serverUrl, token)
                         store.saveCachedStatus(fresh)
-                        getUpdater(applicationContext).requestUpdate(PunchTileService::class.java)
                     } catch (_: ApiAuthException) {
                         // Ignore here; UI will prompt re-pairing when opened.
                     } catch (_: Exception) {
                         // Offline sync worker remains scheduled with NetworkType.CONNECTED.
+                    } finally {
+                        getUpdater(applicationContext).requestUpdate(PunchTileService::class.java)
                     }
                 }
             }
@@ -110,6 +136,10 @@ class PunchTileService : TileService() {
 
         val pendingPunches = store.getPendingPunches()
         val queuedCount = pendingPunches.size
+        Log.d(
+            "PunchTile",
+            "onTileRequest clicked=$clickedId clockedIn=${cached?.clockedIn} queued=$queuedCount"
+        )
         val queueStuck = pendingPunches.any { p ->
             try {
                 Duration.between(OffsetDateTime.parse(p.clientTs), OffsetDateTime.now()).toMinutes() >= QUEUE_STUCK_MINUTES
@@ -199,7 +229,9 @@ class PunchTileService : TileService() {
 
         val tile = TileBuilders.Tile.Builder()
             .setResourcesVersion(RESOURCES_VERSION)
-            .setFreshnessIntervalMillis(15 * 60 * 1000L)
+            // Short freshness: the launcher otherwise keeps a cached render for up to
+            // the freshness window, so punches/sync state would appear stale.
+            .setFreshnessIntervalMillis(60 * 1000L)
             .setTileTimeline(timelineBuilder.build())
             .build()
 
@@ -212,6 +244,26 @@ class PunchTileService : TileService() {
         return Futures.immediateFuture(
             ResourceBuilders.Resources.Builder()
                 .setVersion(RESOURCES_VERSION)
+                .addIdToImageMapping(
+                    RES_SYNC,
+                    ResourceBuilders.ImageResource.Builder()
+                        .setAndroidResourceByResId(
+                            ResourceBuilders.AndroidImageResourceByResId.Builder()
+                                .setResourceId(R.drawable.ic_sync)
+                                .build()
+                        )
+                        .build()
+                )
+                .addIdToImageMapping(
+                    RES_SYNC_PROBLEM,
+                    ResourceBuilders.ImageResource.Builder()
+                        .setAndroidResourceByResId(
+                            ResourceBuilders.AndroidImageResourceByResId.Builder()
+                                .setResourceId(R.drawable.ic_sync_problem)
+                                .build()
+                        )
+                        .build()
+                )
                 .build()
         )
     }
@@ -385,65 +437,47 @@ class PunchTileService : TileService() {
             .addContent(styledText(statusText, 11f, statusColor, bold = true))
             .build()
 
+        // Compact status row: the sync button and the warning dot sit in small fixed
+        // side slots that are always present, so the pill keeps its exact centred
+        // position when either indicator appears or disappears.
         val statusRowBuilder = LayoutElementBuilders.Row.Builder()
             .setWidth(wrap())
             .setVerticalAlignment(LayoutElementBuilders.VERTICAL_ALIGN_CENTER)
-            .addContent(statusPill)
 
-        if (queuedCount > 0) {
-            val white = 0xFFFFFFFF.toInt()
-            val dotModifiers = ModifiersBuilders.Modifiers.Builder()
-                .setBackground(
-                    ModifiersBuilders.Background.Builder()
-                        .setColor(argb(if (queueStuck) 0x00000000 else white))
-                        .setCorner(
-                            ModifiersBuilders.Corner.Builder()
-                                .setRadius(dp(5f))
-                                .build()
-                        )
-                        .build()
-                )
-                .setClickable(openMainClickable)
-            if (queueStuck) {
-                dotModifiers.setBorder(
-                    ModifiersBuilders.Border.Builder()
-                        .setColor(argb(white))
-                        .setWidth(dp(1.5f))
-                        .build()
-                )
-            }
-            statusRowBuilder.addContent(
-                LayoutElementBuilders.Spacer.Builder().setWidth(dp(5f)).build()
-            )
-            statusRowBuilder.addContent(
-                LayoutElementBuilders.Box.Builder()
-                    .setWidth(dp(9f))
-                    .setHeight(dp(9f))
-                    .setModifiers(dotModifiers.build())
+        val syncSlot = LayoutElementBuilders.Box.Builder()
+            .setWidth(dp(18f))
+            .setHeight(wrap())
+            .setHorizontalAlignment(LayoutElementBuilders.HORIZONTAL_ALIGN_CENTER)
+            .setVerticalAlignment(LayoutElementBuilders.VERTICAL_ALIGN_CENTER)
+            .setModifiers(
+                ModifiersBuilders.Modifiers.Builder()
+                    .setClickable(loadActionClickable(CLICK_SYNC))
                     .build()
             )
-            statusRowBuilder.addContent(
-                LayoutElementBuilders.Spacer.Builder().setWidth(dp(3f)).build()
-            )
-            statusRowBuilder.addContent(
-                LayoutElementBuilders.Box.Builder()
-                    .setWidth(wrap())
-                    .setHeight(wrap())
-                    .setModifiers(
-                        ModifiersBuilders.Modifiers.Builder()
-                            .setClickable(openMainClickable)
-                            .build()
-                    )
-                    .addContent(styledText(queuedCount.toString(), 11f, white, bold = true))
+        if (queuedCount > 0) {
+            syncSlot.addContent(
+                LayoutElementBuilders.Image.Builder()
+                    .setResourceId(if (queueStuck) RES_SYNC_PROBLEM else RES_SYNC)
+                    .setWidth(dp(11f))
+                    .setHeight(dp(11f))
                     .build()
             )
         }
+        statusRowBuilder.addContent(syncSlot.build())
+        statusRowBuilder.addContent(statusPill)
 
-        if (hasWarnings) {
-            statusRowBuilder.addContent(
-                LayoutElementBuilders.Spacer.Builder().setWidth(dp(5f)).build()
+        val warnSlot = LayoutElementBuilders.Box.Builder()
+            .setWidth(dp(18f))
+            .setHeight(wrap())
+            .setHorizontalAlignment(LayoutElementBuilders.HORIZONTAL_ALIGN_CENTER)
+            .setVerticalAlignment(LayoutElementBuilders.VERTICAL_ALIGN_CENTER)
+            .setModifiers(
+                ModifiersBuilders.Modifiers.Builder()
+                    .setClickable(openMainClickable)
+                    .build()
             )
-            statusRowBuilder.addContent(
+        if (hasWarnings) {
+            warnSlot.addContent(
                 LayoutElementBuilders.Box.Builder()
                     .setWidth(dp(9f))
                     .setHeight(dp(9f))
@@ -459,12 +493,12 @@ class PunchTileService : TileService() {
                                     )
                                     .build()
                             )
-                            .setClickable(openMainClickable)
                             .build()
                     )
                     .build()
             )
         }
+        statusRowBuilder.addContent(warnSlot.build())
         val statusHeader = statusRowBuilder.build()
 
         val heroBlock = LayoutElementBuilders.Column.Builder()

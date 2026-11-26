@@ -6,7 +6,10 @@ import com.lennihein.atoss.wear.data.PendingPunch
 import com.lennihein.atoss.wear.data.TokenStore
 import com.lennihein.atoss.wear.data.WatchStatus
 import com.lennihein.atoss.wear.tile.PunchTileService
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -35,6 +38,7 @@ object AtossApiClient {
 
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
     private val flushMutex = Mutex()
+    private val queueScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(8, TimeUnit.SECONDS)
@@ -176,38 +180,23 @@ object AtossApiClient {
         action: String,
         location: String
     ): WatchStatus {
-        val token = store.token ?: throw ApiAuthException("Watch is not paired")
+        if (store.token.isNullOrBlank()) throw ApiAuthException("Watch is not paired")
         val nowTs = OffsetDateTime.now().toString()
         val nowLocal = LocalDateTime.now()
         val localDate = nowLocal.toLocalDate().toString()
         val localHm = "%02d:%02d".format(nowLocal.hour, nowLocal.minute)
         val eventId = UUID.randomUUID().toString()
 
-        return try {
-            flushPendingPunches(store)
-            val fresh = punch(
-                serverUrl = store.serverUrl,
-                token = token,
-                action = action,
-                location = location,
-                clientTs = nowTs,
-                eventId = eventId
-            )
-            store.saveCachedStatus(fresh)
-            fresh
-        } catch (e: HttpPunchException) {
-            // Permanently rejected by the server; queueing it would only poison the flush.
-            throw e
-        } catch (e: ApiAuthException) {
-            // Not applied server-side: keep the punch queued so it lands after re-pairing.
-            store.enqueuePendingPunch(PendingPunch(action, location, nowTs, eventId))
-            store.applyOptimisticPunch(action, location, localDate, localHm)
-            PunchTileService.enqueueOfflineSync(context)
-            throw e
-        } catch (_: IOException) {
+        // Optimistic-first: persist and show the punch immediately instead of waiting
+        // on the network. The queued PunchSyncWorker (and the caller's status refresh)
+        // flushes it in the background; a permanent rejection is dropped by the flush
+        // and the next status refresh reconciles the UI with the server.
+        return withContext(Dispatchers.IO) {
             store.enqueuePendingPunch(PendingPunch(action, location, nowTs, eventId))
             val optimistic = store.applyOptimisticPunch(action, location, localDate, localHm)
-            PunchTileService.enqueueOfflineSync(context)
+            // WorkManager init is not free; schedule it detached so it never delays
+            // the optimistic UI response.
+            queueScope.launch { PunchTileService.enqueueOfflineSync(context) }
             optimistic
         }
     }

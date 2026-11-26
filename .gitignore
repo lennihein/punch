@@ -36,6 +36,7 @@ GEMINI.md
 
 # Wear OS build artifacts
 wear/.gradle/
+wear/.kotlin/
 wear/build/
 wear/local.properties
 wear/.idea/

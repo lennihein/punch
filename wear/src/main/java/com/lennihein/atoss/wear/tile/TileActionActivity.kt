@@ -43,10 +43,7 @@ class TileActionActivity : ComponentActivity() {
                 )
                 TileService.getUpdater(applicationContext).requestUpdate(PunchTileService::class.java)
                 vibrateConfirm()
-                val queued = store.getPendingPunches().size
-                val label = if (queued > 0) {
-                    if (updated.clockedIn) "Queued in ($location)" else "Queued out"
-                } else if (updated.clockedIn) {
+                val label = if (updated.clockedIn) {
                     "Clocked in (${updated.activeEntry?.location ?: location})"
                 } else {
                     "Clocked out"

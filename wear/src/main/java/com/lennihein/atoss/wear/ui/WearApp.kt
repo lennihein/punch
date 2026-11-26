@@ -33,14 +33,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Sync
-import androidx.compose.material.icons.filled.SyncProblem
 import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
 import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
 import androidx.wear.compose.material.Button
@@ -58,12 +56,16 @@ import androidx.wear.compose.material.Scaffold
 import androidx.wear.compose.material.Text
 import androidx.wear.compose.material.TimeText
 import androidx.wear.tiles.TileService
+import com.lennihein.atoss.wear.R
 import com.lennihein.atoss.wear.data.TokenStore
+import com.lennihein.atoss.wear.data.WatchStatus
 import com.lennihein.atoss.wear.network.ApiAuthException
 import com.lennihein.atoss.wear.network.AtossApiClient
 import com.lennihein.atoss.wear.tile.PunchTileService
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.time.Duration
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -103,28 +105,33 @@ private val WatchColors = Colors(
 @Composable
 fun WearApp(store: TokenStore) {
     MaterialTheme(colors = WatchColors) {
-        var token by remember { mutableStateOf(store.token) }
-        Scaffold(timeText = { TimeText() }) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(SlateBg)
-            ) {
-                if (token.isNullOrBlank()) {
-                    PairingScreen(
-                        store = store,
-                        onPaired = { newToken -> token = newToken }
-                    )
-                } else {
-                    PunchScreen(
-                        store = store,
-                        token = token!!,
-                        onUnpaired = {
-                            store.clearAuth()
-                            token = null
-                        }
-                    )
-                }
+        var token by remember { mutableStateOf<String?>(null) }
+        var loaded by remember { mutableStateOf(false) }
+        LaunchedEffect(Unit) {
+            token = withContext(Dispatchers.IO) { store.token }
+            loaded = true
+        }
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(SlateBg)
+        ) {
+            if (!loaded) {
+                // Encrypted store still loading; keep the splash colour.
+            } else if (token.isNullOrBlank()) {
+                PairingScreen(
+                    store = store,
+                    onPaired = { newToken -> token = newToken }
+                )
+            } else {
+                PunchScreen(
+                    store = store,
+                    token = token!!,
+                    onUnpaired = {
+                        store.clearAuth()
+                        token = null
+                    }
+                )
             }
         }
     }
@@ -146,6 +153,7 @@ private fun PairingScreen(
     var errorMsg by remember { mutableStateOf<String?>(null) }
 
     Scaffold(
+        timeText = { TimeText() },
         positionIndicator = { PositionIndicator(scalingLazyListState = listState) }
     ) {
         ScalingLazyColumn(
@@ -303,11 +311,28 @@ private fun PunchScreen(
     val haptic = LocalHapticFeedback.current
     val listState = rememberScalingLazyListState(initialCenterItemIndex = 0)
 
-    var status by remember { mutableStateOf(store.getCachedStatus()) }
-    var pendingCount by remember { mutableIntStateOf(store.getPendingPunches().size) }
+    var status by remember { mutableStateOf<WatchStatus?>(null) }
+    var pendingCount by remember { mutableIntStateOf(0) }
+    var queueStuck by remember { mutableStateOf(false) }
     var busyAction by remember { mutableStateOf<String?>(null) }
     var errorMsg by remember { mutableStateOf<String?>(null) }
     var activeElapsedMin by remember { mutableIntStateOf(0) }
+
+    suspend fun readQueueState() {
+        val (count, stuck) = withContext(Dispatchers.IO) {
+            val pending = store.getPendingPunches()
+            val stuck = pending.any { p ->
+                try {
+                    Duration.between(OffsetDateTime.parse(p.clientTs), OffsetDateTime.now()).toMinutes() >= QUEUE_STUCK_MINUTES
+                } catch (_: Exception) {
+                    false
+                }
+            }
+            pending.size to stuck
+        }
+        pendingCount = count
+        queueStuck = stuck
+    }
 
     suspend fun refreshStatus() {
         try {
@@ -315,13 +340,13 @@ private fun PunchScreen(
             val fresh = AtossApiClient.getStatus(store.serverUrl, token)
             status = fresh
             store.saveCachedStatus(fresh)
-            pendingCount = store.getPendingPunches().size
+            readQueueState()
             errorMsg = null
             TileService.getUpdater(context).requestUpdate(PunchTileService::class.java)
         } catch (_: ApiAuthException) {
             onUnpaired()
         } catch (e: Exception) {
-            pendingCount = store.getPendingPunches().size
+            readQueueState()
             errorMsg = if (pendingCount > 0) "Offline ($pendingCount queued)" else (e.message ?: "Offline")
         }
     }
@@ -339,7 +364,7 @@ private fun PunchScreen(
                     location = location
                 )
                 status = updated
-                pendingCount = store.getPendingPunches().size
+                readQueueState()
                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                 TileService.getUpdater(context).requestUpdate(PunchTileService::class.java)
             } catch (_: ApiAuthException) {
@@ -349,10 +374,13 @@ private fun PunchScreen(
             } finally {
                 busyAction = null
             }
+            // Reconcile with the server in the background; the punch is already visible.
+            refreshStatus()
         }
     }
 
     LaunchedEffect(token) {
+        status = withContext(Dispatchers.IO) { store.getCachedStatus() }
         refreshStatus()
     }
 
@@ -380,6 +408,7 @@ private fun PunchScreen(
     val warnings = status?.warnings.orEmpty()
 
     Scaffold(
+        timeText = { TimeText() },
         positionIndicator = { PositionIndicator(scalingLazyListState = listState) }
     ) {
         ScalingLazyColumn(
@@ -391,12 +420,32 @@ private fun PunchScreen(
             verticalArrangement = Arrangement.spacedBy(8.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // 1. Status Badge Pill (+ warning dot matching Widget)
+            // 1. Status row: sync icon and warning dot sit in small fixed side slots
+            // that are always present, so the pill never moves (matches Widget).
             item {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.Center
                 ) {
+                    Box(
+                        modifier = Modifier.width(18.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (pendingCount > 0) {
+                            Icon(
+                                painter = painterResource(
+                                    if (queueStuck) R.drawable.ic_sync_problem else R.drawable.ic_sync
+                                ),
+                                contentDescription = if (queueStuck) {
+                                    "Punches not syncing"
+                                } else {
+                                    "Punches queued for sync"
+                                },
+                                tint = Color.Unspecified,
+                                modifier = Modifier.size(11.dp)
+                            )
+                        }
+                    }
                     Box(
                         modifier = Modifier
                             .clip(RoundedCornerShape(999.dp))
@@ -419,46 +468,23 @@ private fun PunchScreen(
                             color = if (isClockedIn) EmeraldBright else SlateMuted
                         )
                     }
-                    if (warnings.isNotEmpty()) {
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Box(
-                            modifier = Modifier
-                                .size(10.dp)
-                                .clip(CircleShape)
-                                .background(Color(0xFFF59E0B))
-                                .clickable {
-                                    scope.launch {
-                                        listState.animateScrollToItem(3)
+                    Box(
+                        modifier = Modifier.width(18.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (warnings.isNotEmpty()) {
+                            Box(
+                                modifier = Modifier
+                                    .size(10.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFFF59E0B))
+                                    .clickable {
+                                        scope.launch {
+                                            listState.animateScrollToItem(3)
+                                        }
                                     }
-                                }
-                        )
-                    }
-                    if (pendingCount > 0) {
-                        val queueStuck = store.getPendingPunches().any { p ->
-                            try {
-                                Duration.between(OffsetDateTime.parse(p.clientTs), OffsetDateTime.now()).toMinutes() >= QUEUE_STUCK_MINUTES
-                            } catch (_: Exception) {
-                                false
-                            }
+                            )
                         }
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Icon(
-                            imageVector = if (queueStuck) Icons.Default.SyncProblem else Icons.Default.Sync,
-                            contentDescription = if (queueStuck) {
-                                "$pendingCount punches not syncing"
-                            } else {
-                                "$pendingCount punches queued for sync"
-                            },
-                            tint = Color.White,
-                            modifier = Modifier.size(12.dp)
-                        )
-                        Spacer(modifier = Modifier.width(2.dp))
-                        Text(
-                            text = "$pendingCount",
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = Color.White
-                        )
                     }
                 }
             }
