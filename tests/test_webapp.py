@@ -114,10 +114,11 @@ def test_pwa_installability_assets(monkeypatch, tmp_path: Path):
             ri = client.get(icon["src"])
             assert ri.status_code == 200, icon["src"]
 
-        # Manifest theme/background colors must match the light theme used by
-        # the page (base.html meta theme-color / style.css --bg).
-        assert m["theme_color"] == "#f2f0eb"
-        assert m["background_color"] == "#f2f0eb"
+        # Manifest theme/background colors use the dark --bg (#131720) so the
+        # Android WebAPK splash screen and bottom navigation bar aren't white;
+        # base.html switches <meta name="theme-color"> dynamically for light mode.
+        assert m["theme_color"] == "#131720"
+        assert m["background_color"] == "#131720"
 
         # A service worker with a fetch handler must be served from root scope.
         sw = client.get("/sw.js")
@@ -174,7 +175,7 @@ def test_theme_color_meta_and_root_background_follow_theme(monkeypatch, tmp_path
         assert 'id="theme-color-meta"' in metas[0]
         content = re.search(r'content="([^"]+)"', metas[0])
         assert content is not None
-        assert content.group(1).lower() == light_bg
+        assert content.group(1).lower() == dark_bg
 
         # The inline head script runs before the stylesheet is applied (no
         # white flash on load) and resolves the theme from localStorage /
@@ -193,11 +194,11 @@ def test_theme_color_meta_and_root_background_follow_theme(monkeypatch, tmp_path
         assert page.text.count(expected_set) == 2
         assert "function applyTheme(theme)" in page.text
 
-        # The manifest keeps the light install-time colors, matching the
-        # default meta content and :root --bg.
+        # The manifest uses the dark install-time colors so Android WebAPKs
+        # don't paint a white bottom navigation bar in dark mode.
         manifest = client.get("/manifest.json").json()
-        assert manifest["theme_color"].lower() == light_bg
-        assert manifest["background_color"].lower() == light_bg
+        assert manifest["theme_color"].lower() == dark_bg
+        assert manifest["background_color"].lower() == dark_bg
 
 
 def test_web_punch_flow_and_location_switch(monkeypatch, tmp_path: Path):

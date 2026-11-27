@@ -181,11 +181,11 @@ def health_check() -> Dict[str, str]:
 @app.get("/manifest.json")
 def pwa_manifest() -> Response:
     # Served with the canonical manifest media type (application/json also
-    # parses, but application/manifest+json is what the spec registers) and
-    # with theme/background colors matching the light theme in base.html
-    # / style.css (--bg: #f2f0eb). At runtime the theme-color meta and the
-    # html background in base.html/style.css switch to the dark --bg
-    # (#131720), so the Android gesture bar follows the selected theme.
+    # parses, but application/manifest+json is what the spec registers).
+    # Android Chrome WebAPKs bake background_color/theme_color into the
+    # generated APK for the splash screen and bottom navigation bar, so use
+    # the dark --bg (#131720) here; base.html's inline head script updates
+    # <meta name="theme-color"> to #f2f0eb when light mode is active.
     return Response(
         content=json.dumps({
             "name": "Punch!",
@@ -194,8 +194,8 @@ def pwa_manifest() -> Response:
             "scope": "/",
             "start_url": "/",
             "display": "standalone",
-            "background_color": "#f2f0eb",
-            "theme_color": "#f2f0eb",
+            "background_color": "#131720",
+            "theme_color": "#131720",
             "icons": [
                 {
                     "src": "/static/punch_icon.svg",
