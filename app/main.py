@@ -183,7 +183,9 @@ def pwa_manifest() -> Response:
     # Served with the canonical manifest media type (application/json also
     # parses, but application/manifest+json is what the spec registers) and
     # with theme/background colors matching the light theme in base.html
-    # / style.css (--bg: #f2f0eb).
+    # / style.css (--bg: #f2f0eb). At runtime the theme-color meta and the
+    # html background in base.html/style.css switch to the dark --bg
+    # (#131720), so the Android gesture bar follows the selected theme.
     return Response(
         content=json.dumps({
             "name": "Punch!",

@@ -133,9 +133,70 @@ def test_pwa_installability_assets(monkeypatch, tmp_path: Path):
         assert page.status_code == 200
         assert "navigator.serviceWorker.register('/sw.js')" in page.text
         assert '<link rel="manifest" href="/manifest.json" crossorigin="use-credentials">' in page.text
-        meta = re.search(r'<meta name="theme-color" content="([^"]+)"', page.text)
+        meta = re.search(r'<meta name="theme-color"[^>]*content="([^"]+)"', page.text)
         assert meta is not None
         assert meta.group(1) == m["theme_color"]
+
+
+def test_theme_color_meta_and_root_background_follow_theme(monkeypatch, tmp_path: Path):
+    import re
+
+    # The exact --bg colors per theme in style.css are the single source of
+    # truth for both the CSS canvas and the theme-color meta.
+    css = (REPO_ROOT / "app" / "static" / "style.css").read_text(encoding="utf-8")
+
+    def css_var(selector: str, var: str) -> str:
+        block = re.search(re.escape(selector) + r"\s*\{([^}]*)\}", css)
+        assert block is not None, selector
+        v = re.search(re.escape(var) + r":\s*(#[0-9a-fA-F]{6})\b", block.group(1))
+        assert v is not None, f"{var} in {selector}"
+        return v.group(1).lower()
+
+    light_bg = css_var(":root", "--bg")
+    dark_bg = css_var('html[data-theme="dark"]', "--bg")
+    assert light_bg == "#f2f0eb"
+    assert dark_bg == "#131720"
+
+    # The root element must paint the canvas too (Android Chrome paints the
+    # bottom gesture-bar strip from the root background), not just <body>.
+    assert re.search(r"html,\s*body\s*\{[^}]*background-color:\s*var\(--bg\)", css)
+
+    with _make_client(monkeypatch, tmp_path, seed_sep=False) as client:
+        page = client.get("/", headers={"Remote-User": "alice"})
+        assert page.status_code == 200
+
+        # Exactly one theme-color meta, without a media attribute (so the
+        # dynamic JS override is never shadowed), carrying a stable id.
+        metas = re.findall(r'<meta\s+name="theme-color"[^>]*>', page.text)
+        assert len(metas) == 1
+        assert "media=" not in metas[0]
+        assert 'id="theme-color-meta"' in metas[0]
+        content = re.search(r'content="([^"]+)"', metas[0])
+        assert content is not None
+        assert content.group(1).lower() == light_bg
+
+        # The inline head script runs before the stylesheet is applied (no
+        # white flash on load) and resolves the theme from localStorage /
+        # prefers-color-scheme.
+        theme_script_pos = page.text.index("document.documentElement.dataset.theme = theme;")
+        css_link_pos = page.text.index('<link rel="stylesheet"')
+        assert theme_script_pos < css_link_pos
+        assert "localStorage.getItem('punch_theme')" in page.text
+        assert "prefers-color-scheme: dark" in page.text
+
+        # Initial load AND every theme toggle (applyTheme) update the meta to
+        # the exact --bg colors from style.css: head script + applyTheme.
+        expected_set = (
+            "meta.setAttribute('content', theme === 'dark' ? '" + dark_bg + "' : '" + light_bg + "')"
+        )
+        assert page.text.count(expected_set) == 2
+        assert "function applyTheme(theme)" in page.text
+
+        # The manifest keeps the light install-time colors, matching the
+        # default meta content and :root --bg.
+        manifest = client.get("/manifest.json").json()
+        assert manifest["theme_color"].lower() == light_bg
+        assert manifest["background_color"].lower() == light_bg
 
 
 def test_web_punch_flow_and_location_switch(monkeypatch, tmp_path: Path):

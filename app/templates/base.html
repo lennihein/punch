@@ -8,7 +8,7 @@
   <link rel="icon" href="/static/icon-192.png" sizes="192x192" type="image/png">
   <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
   <link rel="manifest" href="/manifest.json" crossorigin="use-credentials">
-  <meta name="theme-color" content="#f2f0eb">
+  <meta name="theme-color" content="#f2f0eb" id="theme-color-meta">
   <script>
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', function () {
@@ -24,14 +24,14 @@
         theme = (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
       }
       document.documentElement.dataset.theme = theme;
-      var meta = document.querySelector('meta[name="theme-color"]');
+      var meta = document.getElementById('theme-color-meta') || document.querySelector('meta[name="theme-color"]');
       if (meta) meta.setAttribute('content', theme === 'dark' ? '#131720' : '#f2f0eb');
     })();
   </script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,100..900&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/style.css?v=dark30">
+  <link rel="stylesheet" href="/static/style.css?v=dark31">
 </head>
 <body>
   <header class="topbar">
