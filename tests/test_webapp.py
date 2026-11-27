@@ -131,6 +131,7 @@ def test_pwa_installability_assets(monkeypatch, tmp_path: Path):
         # theme-color meta consistent with the manifest.
         page = client.get("/", headers={"Remote-User": "alice"})
         assert page.status_code == 200
+        assert 'viewport-fit=cover' in page.text
         assert "navigator.serviceWorker.register('/sw.js')" in page.text
         assert '<link rel="manifest" href="/manifest.json" crossorigin="use-credentials">' in page.text
         meta = re.search(r'<meta name="theme-color"[^>]*content="([^"]+)"', page.text)
